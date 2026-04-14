@@ -2,18 +2,22 @@
 #include <Arduino.h>
 
 namespace Recorder {
-    // Aufnahme starten, WAV-Datei auf SD anlegen
-    // Gibt false zurück wenn SD-Fehler
+    // Aufnahme starten/stoppen
     bool start(const String& filePath);
-
-    // Aufnahme stoppen und WAV-Header finalisieren
     void stop();
 
-    // Im Loop aufrufen: I2S-Puffer lesen und in Datei schreiben
+    // Im Loop aufrufen: Puffer lesen, Gain anwenden, auf SD schreiben
     void tick();
 
-    // Vergangene Sekunden seit Start
+    // Status
+    bool     isRunning();
     uint32_t elapsedSeconds();
 
-    bool isRunning();
+    // Software-Gain: 1–16 (Faktor auf die Sample-Werte angewendet)
+    // Standardwert: 4. Änderung wirkt sofort, auch während der Aufnahme.
+    void setGain(int gain);
+    int  getGain();
+
+    // Aktueller Eingangspegel 0–100 (Peak aus letztem Buffer, normalisiert)
+    int  getLevel();
 }

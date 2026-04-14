@@ -15,6 +15,7 @@ def format_markdown(
     duration: float,
     summary: dict,
     diarization_used: bool,
+    ollama_error: str | None = None,
 ) -> None:
     """Schreibt die strukturierte Markdown-Datei."""
 
@@ -44,6 +45,8 @@ def format_markdown(
     lines.append(f"| Sprecher | {speaker_count} erkannt |")
     lines.append(f"| Sprechererkennung | {'ja' if diarization_used else 'nein'} |")
     lines.append(f"| Stimmung | {summary.get('stimmung', '-')} |")
+    if ollama_error:
+        lines.append(f"| Zusammenfassung | ⚠ Ollama-Fehler |")
     lines.append("")
 
     # ── Zusammenfassung ───────────────────────────────────────────────────────

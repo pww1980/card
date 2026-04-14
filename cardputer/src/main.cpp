@@ -5,6 +5,7 @@
 #include <Preferences.h>
 #include <ArduinoJson.h>
 #include <time.h>
+#include <vector>
 
 #include "config.h"
 #include "recorder.h"
@@ -14,7 +15,7 @@
 // ── Menüeinträge ─────────────────────────────────────────────────────────────
 static const char* MENU_ITEMS[] = {
     "Aufnahme starten",
-    "Datei uebermitteln",
+    "Aufnahmen ansehen",
     "WLAN einrichten",
     "Server pruefen",
     "SD-Karte pruefen"
@@ -29,33 +30,48 @@ enum class AppState {
     UPLOADING,
     UPLOAD_OK,
     UPLOAD_FAIL,
+    JOB_POLL,
+    FILE_LIST,
     WIFI_SETUP,
     SERVER_CHECK,
     SD_CHECK
 };
 
 // ── Globaler Zustand ──────────────────────────────────────────────────────────
-static AppState g_state     = AppState::MENU;
-static int      g_menuIdx   = 0;
-static String   g_lastFile  = "";
-static String   g_lastJobId = "";
+static AppState  g_state     = AppState::MENU;
+static int       g_menuIdx   = 0;
+static String    g_lastFile  = "";
+static String    g_lastJobId = "";
+static unsigned long g_stateEnteredMs = 0;
 
 // WLAN-Setup
 static String g_setupSsid  = "";
 static String g_setupPass  = "";
-static int    g_setupField  = 0;   // 0 = SSID, 1 = Passwort
+static int    g_setupField = 0;
 
-// Zeitsteuerung für temporäre States
-static unsigned long g_stateEnteredMs = 0;
+// File-Browser
+static std::vector<RecFileEntry> g_fileList;
+static int g_fileListIdx    = 0;
+static int g_fileListOffset = 0;
 
-// ── Preferences (NVS) ─────────────────────────────────────────────────────────
+// Job-Polling
+static unsigned long g_lastPollMs    = 0;
+static String        g_pollStatus    = "queued";
+static const int     POLL_INTERVAL_MS = 3000;
+
+// Batterie (gecacht, alle 10s aktualisiert)
+static int  g_battPct    = -1;
+static bool g_charging   = false;
+static unsigned long g_lastBattMs = 0;
+
+// ── Preferences ───────────────────────────────────────────────────────────────
 static Preferences prefs;
 
 static String loadPref(const char* key, const char* fallback) {
     prefs.begin("dictate", true);
-    String val = prefs.getString(key, fallback);
+    String v = prefs.getString(key, fallback);
     prefs.end();
-    return val;
+    return v;
 }
 
 static void savePref(const char* key, const String& val) {
@@ -71,9 +87,8 @@ static void syncTime() {
 
 static String timestampFilename() {
     struct tm ti;
-    if (!getLocalTime(&ti, 2000)) {
+    if (!getLocalTime(&ti, 2000))
         return "/rec/rec_" + String(millis()) + ".wav";
-    }
     char buf[32];
     strftime(buf, sizeof(buf), "/rec/%Y%m%d_%H%M%S.wav", &ti);
     return String(buf);
@@ -85,14 +100,13 @@ static void enterState(AppState s) {
 }
 
 static void connectWifi(const String& ssid, const String& pass) {
-    Display::showMessage("Verbinde mit WLAN...");
+    Display::showMessage("Verbinde: " + ssid);
     WiFi.disconnect(true);
     delay(200);
     WiFi.begin(ssid.c_str(), pass.c_str());
     unsigned long t = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - t < WIFI_TIMEOUT_MS) {
+    while (WiFi.status() != WL_CONNECTED && millis() - t < WIFI_TIMEOUT_MS)
         delay(200);
-    }
     if (WiFi.status() == WL_CONNECTED) {
         syncTime();
         Display::showMessage("Verbunden: " + WiFi.localIP().toString());
@@ -101,6 +115,67 @@ static void connectWifi(const String& ssid, const String& pass) {
         Display::showError("WLAN-Verbindung fehlgeschlagen");
         delay(2000);
     }
+}
+
+static void updateBattery() {
+    if (millis() - g_lastBattMs < 10000) return;
+    g_lastBattMs = millis();
+    g_battPct    = M5Cardputer.Power.getBatteryLevel();
+    g_charging   = M5Cardputer.Power.isCharging();
+}
+
+// Dateiliste aus /rec neu laden (nach Datum absteigend sortiert)
+static void loadFileList() {
+    g_fileList.clear();
+    File dir = SD.open(REC_DIR);
+    if (!dir) return;
+    File f = dir.openNextFile();
+    while (f) {
+        if (!f.isDirectory() && String(f.name()).endsWith(".wav")) {
+            RecFileEntry e;
+            e.name   = String(f.name());  // nur Dateiname, kein Pfad
+            e.sizeKB = (uint32_t)(f.size() / 1024);
+            g_fileList.push_back(e);
+        }
+        f.close();
+        f = dir.openNextFile();
+    }
+    dir.close();
+    // Neueste zuerst (Dateinamen sind Timestamps → lexikografisch absteigend)
+    std::sort(g_fileList.begin(), g_fileList.end(),
+              [](const RecFileEntry& a, const RecFileEntry& b) {
+                  return a.name > b.name;
+              });
+}
+
+// Vollständigen Pfad für Dateilisteneintrag liefern
+static String fullPath(const RecFileEntry& e) {
+    return String(REC_DIR) + "/" + e.name;
+}
+
+// HTTP GET /status/{job_id}
+static String pollJobStatus(const String& jobId) {
+    if (WiFi.status() != WL_CONNECTED) return "offline";
+    WiFiClient client;
+    if (!client.connect(SERVER_HOST, SERVER_PORT)) return "no_conn";
+    client.printf("GET /status/%s HTTP/1.1\r\nHost: %s:%d\r\nConnection: close\r\n\r\n",
+                  jobId.c_str(), SERVER_HOST, SERVER_PORT);
+    unsigned long dl = millis() + 5000;
+    while (client.available() == 0 && millis() < dl) delay(10);
+    String status_line = client.readStringUntil('\n');
+    int code = (status_line.length() > 12) ? status_line.substring(9,12).toInt() : 0;
+    if (code != 200) { client.stop(); return "http_" + String(code); }
+    while (client.available()) {
+        String line = client.readStringUntil('\n');
+        if (line == "\r" || line.isEmpty()) break;
+    }
+    String body;
+    while (client.available()) body += (char)client.read();
+    client.stop();
+    JsonDocument doc;
+    if (deserializeJson(doc, body) == DeserializationError::Ok)
+        return doc["status"].as<String>();
+    return "parse_err";
 }
 
 // ── Setup ─────────────────────────────────────────────────────────────────────
@@ -112,32 +187,32 @@ void setup() {
     Display::init();
     Display::showMessage("Starte...");
 
-    // SD-Karte
-    if (!SD.begin()) {
+    if (!SD.begin(SD_CS_PIN)) {
         Display::showError("SD-Karte fehlt!");
         while (true) delay(1000);
     }
     if (!SD.exists(REC_DIR)) SD.mkdir(REC_DIR);
 
-    // Gespeicherte WLAN-Zugangsdaten laden
+    // Batterie initialisieren
+    g_battPct  = M5Cardputer.Power.getBatteryLevel();
+    g_charging = M5Cardputer.Power.isCharging();
+    g_lastBattMs = millis();
+
+    // WLAN
     String ssid = loadPref("ssid", WIFI_SSID);
     String pass = loadPref("pass", WIFI_PASS);
-
     if (ssid.length() > 0) {
         Display::showMessage("WLAN: " + ssid);
         connectWifi(ssid, pass);
     }
 
-    // Letzte bekannte Aufnahmedatei laden
     g_lastFile = loadPref("lastfile", "");
 
-    // Menü anzeigen
-    Display::showMenu(MENU_ITEMS, MENU_COUNT, g_menuIdx);
+    Display::showMenu(MENU_ITEMS, MENU_COUNT, g_menuIdx, g_battPct, g_charging);
     enterState(AppState::MENU);
 }
 
 // ── Tastatur-Helfer ───────────────────────────────────────────────────────────
-// Gibt das erste gedrückte Zeichen zurück (0 wenn keins)
 static char getKey() {
     if (!M5Cardputer.Keyboard.isChange() || !M5Cardputer.Keyboard.isPressed())
         return 0;
@@ -145,81 +220,71 @@ static char getKey() {
     if (!st.word.empty()) return st.word[0];
     return 0;
 }
-
 static bool isEnter() {
     if (!M5Cardputer.Keyboard.isChange() || !M5Cardputer.Keyboard.isPressed())
         return false;
     return M5Cardputer.Keyboard.keysState().enter;
 }
-
 static bool isDel() {
     if (!M5Cardputer.Keyboard.isChange() || !M5Cardputer.Keyboard.isPressed())
         return false;
     return M5Cardputer.Keyboard.keysState().del;
 }
-
 static bool isTab() {
     if (!M5Cardputer.Keyboard.isChange() || !M5Cardputer.Keyboard.isPressed())
         return false;
     return M5Cardputer.Keyboard.keysState().tab;
 }
 
-// ── Haupt-Loop ────────────────────────────────────────────────────────────────
+// ── Loop ──────────────────────────────────────────────────────────────────────
 void loop() {
     M5Cardputer.update();
 
     switch (g_state) {
 
-    // ──────────────────────────────────────────────────────────────────────────
+    // ── MENU ─────────────────────────────────────────────────────────────────
     case AppState::MENU: {
+        updateBattery();
         char c     = getKey();
         bool enter = isEnter();
-
-        // Navigation: W/K = hoch, S/J = runter, 1-4 = direkt
         bool moved = false;
-        if (c == 'w' || c == 'W' || c == 'k' || c == 'K') {
-            g_menuIdx = (g_menuIdx - 1 + MENU_COUNT) % MENU_COUNT;
-            moved = true;
-        } else if (c == 's' || c == 'S' || c == 'j' || c == 'J') {
-            g_menuIdx = (g_menuIdx + 1) % MENU_COUNT;
-            moved = true;
-        } else if (c >= '1' && c <= '4') {
-            g_menuIdx = c - '1';
-            enter = true;   // Direkte Auswahl durch Zifferntaste
-        }
 
-        if (moved) {
-            Display::showMenu(MENU_ITEMS, MENU_COUNT, g_menuIdx);
-        }
+        if      (c == 'w' || c == 'W' || c == 'k' || c == 'K')
+            { g_menuIdx = (g_menuIdx - 1 + MENU_COUNT) % MENU_COUNT; moved = true; }
+        else if (c == 's' || c == 'S' || c == 'j' || c == 'J')
+            { g_menuIdx = (g_menuIdx + 1) % MENU_COUNT; moved = true; }
+        else if (c >= '1' && c <= '5')
+            { g_menuIdx = c - '1'; enter = true; }
+
+        if (moved)
+            Display::showMenu(MENU_ITEMS, MENU_COUNT, g_menuIdx, g_battPct, g_charging);
 
         if (enter) {
             switch (g_menuIdx) {
 
-            case 0:  // ── Aufnahme starten ────────────────────────────────────
+            case 0:  // ── Aufnahme starten ──────────────────────────────────
                 g_lastFile = timestampFilename();
                 if (Recorder::start(g_lastFile)) {
                     savePref("lastfile", g_lastFile);
-                    Display::showRecording(0);
+                    Display::showRecording(0, Recorder::getGain(), 0);
                     enterState(AppState::RECORDING);
                 } else {
                     Display::showError("Mikrofon-Fehler");
                     delay(2000);
-                    Display::showMenu(MENU_ITEMS, MENU_COUNT, g_menuIdx);
+                    Display::showMenu(MENU_ITEMS, MENU_COUNT, g_menuIdx,
+                                      g_battPct, g_charging);
                 }
                 break;
 
-            case 1:  // ── Datei erneut übermitteln ────────────────────────────
-                if (g_lastFile.length() == 0 || !SD.exists(g_lastFile)) {
-                    Display::showError("Keine Datei vorhanden");
-                    delay(2000);
-                    Display::showMenu(MENU_ITEMS, MENU_COUNT, g_menuIdx);
-                } else {
-                    Display::showUploading();
-                    enterState(AppState::UPLOADING);
-                }
+            case 1:  // ── Aufnahmen ansehen ─────────────────────────────────
+                loadFileList();
+                g_fileListIdx    = 0;
+                g_fileListOffset = 0;
+                Display::showFileList(g_fileList, g_fileListIdx, g_fileListOffset);
+                enterState(AppState::FILE_LIST);
                 break;
 
-            case 2:  // ── WLAN einrichten ──────────────────────────────────────
+            case 2:  // ── WLAN einrichten ───────────────────────────────────
                 g_setupSsid  = loadPref("ssid", WIFI_SSID);
                 g_setupPass  = loadPref("pass", WIFI_PASS);
                 g_setupField = 0;
@@ -227,12 +292,12 @@ void loop() {
                 enterState(AppState::WIFI_SETUP);
                 break;
 
-            case 3:  // ── Server prüfen ────────────────────────────────────────
+            case 3:  // ── Server prüfen ─────────────────────────────────────
                 Display::showServerCheck(SERVER_HOST, SERVER_PORT);
                 enterState(AppState::SERVER_CHECK);
                 break;
 
-            case 4:  // ── SD-Karte prüfen ──────────────────────────────────────
+            case 4:  // ── SD-Karte prüfen ───────────────────────────────────
                 enterState(AppState::SD_CHECK);
                 break;
             }
@@ -240,20 +305,28 @@ void loop() {
         break;
     }
 
-    // ──────────────────────────────────────────────────────────────────────────
+    // ── RECORDING ────────────────────────────────────────────────────────────
     case AppState::RECORDING: {
-        // Mikrofon-Puffer in Datei schreiben
         Recorder::tick();
 
-        // Zeit jede Sekunde aktualisieren
         static uint32_t lastSec = 0;
         uint32_t sec = Recorder::elapsedSeconds();
         if (sec != lastSec) {
             lastSec = sec;
-            Display::updateRecordingTime(sec);
+            Display::updateRecording(sec, Recorder::getGain(), Recorder::getLevel());
         }
 
-        // ENTER = Aufnahme stoppen
+        char c = getKey();
+
+        // +/- Gain live anpassen
+        if (c == '+' || c == '=') {
+            Recorder::setGain(Recorder::getGain() + 1);
+            Display::updateRecording(sec, Recorder::getGain(), Recorder::getLevel());
+        } else if (c == '-' || c == '_') {
+            Recorder::setGain(Recorder::getGain() - 1);
+            Display::updateRecording(sec, Recorder::getGain(), Recorder::getLevel());
+        }
+
         if (isEnter()) {
             Recorder::stop();
             Display::showConfirmUpload(g_lastFile);
@@ -262,30 +335,22 @@ void loop() {
         break;
     }
 
-    // ──────────────────────────────────────────────────────────────────────────
+    // ── CONFIRM UPLOAD ───────────────────────────────────────────────────────
     case AppState::CONFIRM_UPLOAD: {
         char c = getKey();
-
         if (c == 'j' || c == 'J' || c == 'y' || c == 'Y') {
-            // Ja: übermitteln
             Display::showUploading();
             enterState(AppState::UPLOADING);
         } else if (c == 'n' || c == 'N') {
-            // Nein: zurück zum Menü
-            Display::showMenu(MENU_ITEMS, MENU_COUNT, g_menuIdx);
+            Display::showMenu(MENU_ITEMS, MENU_COUNT, g_menuIdx, g_battPct, g_charging);
             enterState(AppState::MENU);
         }
         break;
     }
 
-    // ──────────────────────────────────────────────────────────────────────────
+    // ── UPLOADING ────────────────────────────────────────────────────────────
     case AppState::UPLOADING: {
-        // Wird einmalig ausgeführt wenn State betreten wird
-        // (State-Enter-Logik: erster Loop-Durchlauf nach State-Wechsel)
-        if (millis() - g_stateEnteredMs < 100) {
-            // kleines Delay damit Display zeichnen kann
-            break;
-        }
+        if (millis() - g_stateEnteredMs < 150) break;  // Display zeichnen lassen
 
         if (WiFi.status() != WL_CONNECTED) {
             Uploader::addToQueue(g_lastFile);
@@ -294,13 +359,22 @@ void loop() {
             break;
         }
 
-        String jobId = "";
+        String jobId;
         bool ok = Uploader::upload(g_lastFile, jobId);
 
         if (ok) {
-            g_lastJobId = jobId;
+            g_lastJobId  = jobId;
+            g_pollStatus = "queued";
+            g_lastPollMs = 0;
             Display::showUploadOk(jobId);
-            enterState(AppState::UPLOAD_OK);
+            delay(1500);
+            // Header für Polling zeichnen
+            M5Cardputer.Display.fillRect(0, 0, 240, 22, 0xC5E0);
+            M5Cardputer.Display.setTextColor(TFT_WHITE, 0xC5E0);
+            M5Cardputer.Display.setTextSize(1);
+            M5Cardputer.Display.setCursor(6, 7);
+            M5Cardputer.Display.print("Verarbeitung...");
+            enterState(AppState::JOB_POLL);
         } else {
             Uploader::addToQueue(g_lastFile);
             Display::showUploadFail("Server-Fehler");
@@ -309,92 +383,132 @@ void loop() {
         break;
     }
 
-    // ──────────────────────────────────────────────────────────────────────────
-    case AppState::UPLOAD_OK:
-    case AppState::UPLOAD_FAIL: {
-        // ENTER oder Timeout (4 Sek.) → zurück zum Menü
-        bool timeout = (millis() - g_stateEnteredMs > 4000);
-        if (isEnter() || timeout) {
-            Display::showMenu(MENU_ITEMS, MENU_COUNT, g_menuIdx);
+    // ── JOB_POLL ─────────────────────────────────────────────────────────────
+    case AppState::JOB_POLL: {
+        uint32_t elapsed = (millis() - g_stateEnteredMs) / 1000;
+
+        // Alle POLL_INTERVAL_MS abfragen
+        if (millis() - g_lastPollMs > POLL_INTERVAL_MS) {
+            g_lastPollMs = millis();
+            g_pollStatus = pollJobStatus(g_lastJobId);
+        }
+
+        Display::showJobPoll(g_lastJobId, g_pollStatus, elapsed);
+
+        // Fertig oder Fehler → Ergebnis-Screen
+        if (g_pollStatus == "done") {
+            delay(800);
+            Display::showUploadOk(g_lastJobId);
+            enterState(AppState::UPLOAD_OK);
+        } else if (g_pollStatus == "failed") {
+            Display::showUploadFail("Pipeline-Fehler auf Server");
+            enterState(AppState::UPLOAD_FAIL);
+        }
+
+        // ENTER → sofort zurück zum Menü (Job läuft auf Server weiter)
+        if (isEnter()) {
+            Display::showMenu(MENU_ITEMS, MENU_COUNT, g_menuIdx, g_battPct, g_charging);
             enterState(AppState::MENU);
         }
         break;
     }
 
-    // ──────────────────────────────────────────────────────────────────────────
+    // ── UPLOAD_OK / UPLOAD_FAIL ───────────────────────────────────────────────
+    case AppState::UPLOAD_OK:
+    case AppState::UPLOAD_FAIL: {
+        bool timeout = (millis() - g_stateEnteredMs > 4000);
+        if (isEnter() || timeout) {
+            Display::showMenu(MENU_ITEMS, MENU_COUNT, g_menuIdx, g_battPct, g_charging);
+            enterState(AppState::MENU);
+        }
+        break;
+    }
+
+    // ── FILE_LIST ────────────────────────────────────────────────────────────
+    case AppState::FILE_LIST: {
+        char c     = getKey();
+        bool enter = isEnter();
+        bool back  = false;
+        bool moved = false;
+
+        const int VISIBLE = 4;
+
+        if (c == 'w' || c == 'W' || c == 'k' || c == 'K') {
+            if (g_fileListIdx > 0) {
+                g_fileListIdx--;
+                if (g_fileListIdx < g_fileListOffset)
+                    g_fileListOffset = g_fileListIdx;
+                moved = true;
+            }
+        } else if (c == 's' || c == 'S' || c == 'j' || c == 'J') {
+            if (g_fileListIdx < (int)g_fileList.size() - 1) {
+                g_fileListIdx++;
+                if (g_fileListIdx >= g_fileListOffset + VISIBLE)
+                    g_fileListOffset = g_fileListIdx - VISIBLE + 1;
+                moved = true;
+            }
+        } else if (c == 'n' || c == 'N' || c == 27 /* ESC */ ) {
+            back = true;
+        }
+
+        if (moved)
+            Display::showFileList(g_fileList, g_fileListIdx, g_fileListOffset);
+
+        if (enter && !g_fileList.empty()) {
+            g_lastFile = fullPath(g_fileList[g_fileListIdx]);
+            Display::showConfirmUpload(g_lastFile);
+            enterState(AppState::CONFIRM_UPLOAD);
+        }
+
+        if (back) {
+            Display::showMenu(MENU_ITEMS, MENU_COUNT, g_menuIdx, g_battPct, g_charging);
+            enterState(AppState::MENU);
+        }
+        break;
+    }
+
+    // ── WIFI_SETUP ───────────────────────────────────────────────────────────
     case AppState::WIFI_SETUP: {
         char c     = getKey();
         bool enter = isEnter();
         bool del   = isDel();
         bool tab   = isTab();
-
-        // ESC-Ersatz: Fn+Q oder einfach 'Q' allein abfangen
-        if (c == 27 /* ESC */ ) {
-            Display::showMenu(MENU_ITEMS, MENU_COUNT, g_menuIdx);
-            enterState(AppState::MENU);
-            break;
-        }
-
         bool redraw = false;
 
-        // TAB: Feld wechseln
-        if (tab) {
-            g_setupField = 1 - g_setupField;
-            redraw = true;
-        }
-
-        // Backspace: letztes Zeichen löschen
+        if (tab)  { g_setupField = 1 - g_setupField; redraw = true; }
         if (del) {
-            if (g_setupField == 0 && g_setupSsid.length() > 0) {
-                g_setupSsid.remove(g_setupSsid.length() - 1);
-                redraw = true;
-            } else if (g_setupField == 1 && g_setupPass.length() > 0) {
-                g_setupPass.remove(g_setupPass.length() - 1);
-                redraw = true;
-            }
+            if (g_setupField == 0 && g_setupSsid.length() > 0)
+                { g_setupSsid.remove(g_setupSsid.length() - 1); redraw = true; }
+            else if (g_setupField == 1 && g_setupPass.length() > 0)
+                { g_setupPass.remove(g_setupPass.length() - 1); redraw = true; }
         }
-
-        // Druckbares Zeichen eingeben (max. Feldlänge begrenzen)
         if (c >= 0x20 && c <= 0x7E) {
-            if (g_setupField == 0 && g_setupSsid.length() < 32) {
-                g_setupSsid += c;
-                redraw = true;
-            } else if (g_setupField == 1 && g_setupPass.length() < 64) {
-                g_setupPass += c;
-                redraw = true;
-            }
+            if (g_setupField == 0 && g_setupSsid.length() < 32)
+                { g_setupSsid += c; redraw = true; }
+            else if (g_setupField == 1 && g_setupPass.length() < 64)
+                { g_setupPass += c; redraw = true; }
         }
-
-        // ENTER: Verbinden
         if (enter) {
-            if (g_setupField == 0) {
-                // Erst zu Passwort-Feld wechseln, wenn SSID noch aktiv
-                g_setupField = 1;
-                redraw = true;
-            } else {
-                // Verbinden und Zugangsdaten speichern
+            if (g_setupField == 0) { g_setupField = 1; redraw = true; }
+            else {
                 savePref("ssid", g_setupSsid);
                 savePref("pass", g_setupPass);
                 connectWifi(g_setupSsid, g_setupPass);
-                Display::showMenu(MENU_ITEMS, MENU_COUNT, g_menuIdx);
+                Display::showMenu(MENU_ITEMS, MENU_COUNT, g_menuIdx, g_battPct, g_charging);
                 enterState(AppState::MENU);
                 break;
             }
         }
-
-        if (redraw) {
+        if (redraw)
             Display::showWifiSetup(g_setupSsid, g_setupPass, g_setupField);
-        }
         break;
     }
 
-    // ──────────────────────────────────────────────────────────────────────────
+    // ── SERVER_CHECK ─────────────────────────────────────────────────────────
     case AppState::SERVER_CHECK: {
-        // Einmalig ausführen direkt nach State-Eintritt
         static bool checked = false;
         if (!checked && millis() - g_stateEnteredMs > 150) {
             checked = true;
-
             if (WiFi.status() != WL_CONNECTED) {
                 Display::showServerResult(false, "Kein WLAN");
             } else {
@@ -404,70 +518,54 @@ void loop() {
                 http.begin(url);
                 http.setTimeout(5000);
                 int code = http.GET();
-
-                if (code == 200) {
-                    String body = http.getString();
-                    Display::showServerResult(true, "HTTP 200 – " + body.substring(0, 28));
-                } else if (code > 0) {
+                if (code == 200)
+                    Display::showServerResult(true,
+                        "HTTP 200  " + http.getString().substring(0, 28));
+                else if (code > 0)
                     Display::showServerResult(false, "HTTP " + String(code));
-                } else {
+                else
                     Display::showServerResult(false, "Keine Verbindung");
-                }
                 http.end();
             }
         }
-
-        // Warten auf ENTER → zurück zum Menü
         if (isEnter()) {
-            checked = false;  // Reset für nächsten Aufruf
-            Display::showMenu(MENU_ITEMS, MENU_COUNT, g_menuIdx);
+            checked = false;
+            Display::showMenu(MENU_ITEMS, MENU_COUNT, g_menuIdx, g_battPct, g_charging);
             enterState(AppState::MENU);
         }
         break;
     }
 
-    // ──────────────────────────────────────────────────────────────────────────
+    // ── SD_CHECK ─────────────────────────────────────────────────────────────
     case AppState::SD_CHECK: {
         static bool sdChecked = false;
         if (!sdChecked && millis() - g_stateEnteredMs > 150) {
             sdChecked = true;
-
-            // SD neu initialisieren um aktuellen Zustand zu prüfen
-            if (!SD.begin()) {
+            if (!SD.begin(SD_CS_PIN)) {
                 Display::showSdResult(false, "", 0, 0, 0);
             } else {
-                // Kartentyp
                 String cardType;
                 switch (SD.cardType()) {
-                    case CARD_MMC:  cardType = "MMC";   break;
-                    case CARD_SD:   cardType = "SD";    break;
-                    case CARD_SDHC: cardType = "SDHC";  break;
+                    case CARD_MMC:  cardType = "MMC";  break;
+                    case CARD_SD:   cardType = "SD";   break;
+                    case CARD_SDHC: cardType = "SDHC"; break;
                     default:        cardType = "Unbekannt"; break;
                 }
-
-                uint64_t totalMB = SD.totalBytes() / (1024 * 1024);
-                uint64_t usedMB  = SD.usedBytes()  / (1024 * 1024);
-
-                // Dateien in /rec zählen
+                uint64_t totalMB = SD.totalBytes() / (1024*1024);
+                uint64_t usedMB  = SD.usedBytes()  / (1024*1024);
                 int recFiles = 0;
                 File dir = SD.open(REC_DIR);
                 if (dir) {
                     File f = dir.openNextFile();
-                    while (f) {
-                        if (!f.isDirectory()) recFiles++;
-                        f.close();
-                        f = dir.openNextFile();
-                    }
+                    while (f) { if (!f.isDirectory()) recFiles++; f.close(); f = dir.openNextFile(); }
                     dir.close();
                 }
-
                 Display::showSdResult(true, cardType, totalMB, usedMB, recFiles);
             }
         }
-
         if (isEnter()) {
             sdChecked = false;
-            Display::showMenu(MENU_ITEMS, MENU_COUNT, g_menuIdx);
+            Display::showMenu(MENU_ITEMS, MENU_COUNT, g_menuIdx, g_battPct, g_charging);
             enterState(AppState::MENU);
         }
         break;
@@ -475,7 +573,7 @@ void loop() {
 
     } // switch
 
-    // ── Offline-Queue im Hintergrund (nur im MENU-State) ─────────────────────
+    // ── Offline-Queue im Hintergrund ─────────────────────────────────────────
     static unsigned long lastQueueMs = 0;
     if (g_state == AppState::MENU &&
         WiFi.status() == WL_CONNECTED &&

@@ -1,40 +1,102 @@
 """
 M5Stack Cardputer – Diktiergerät Server
 FastAPI-App: empfängt Audio-Uploads und startet die Verarbeitungs-Pipeline.
+Jobs werden in SQLite persistiert – überleben Server-Neustarts.
 """
 
 import os
 import uuid
+import sqlite3
 import asyncio
 from pathlib import Path
-from typing import Optional
+from contextlib import contextmanager
+from datetime import datetime
 
 import aiofiles
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse
 
 from pipeline import run_pipeline
 
 load_dotenv()
 
-UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "./uploads"))
-OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", "./output"))
+UPLOAD_DIR      = Path(os.getenv("UPLOAD_DIR",    "./uploads"))
+OUTPUT_DIR      = Path(os.getenv("OUTPUT_DIR",    "./output"))
+DB_PATH         = Path(os.getenv("DB_PATH",       "./jobs.db"))
+MAX_UPLOAD_MB   = int(os.getenv("MAX_UPLOAD_MB",  "200"))
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="Cardputer Diktiergerät", version="0.1.0")
+app = FastAPI(title="Cardputer Diktiergerät", version="0.2.0")
 
-# In-Memory Job-Status (für Produktion: Redis/SQLite)
-jobs: dict[str, dict] = {}
+
+# ── SQLite-Hilfsfunktionen ────────────────────────────────────────────────────
+
+def _init_db() -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS jobs (
+                job_id      TEXT PRIMARY KEY,
+                status      TEXT NOT NULL DEFAULT 'queued',
+                audio_file  TEXT,
+                result      TEXT,
+                error       TEXT,
+                created_at  TEXT DEFAULT (datetime('now','localtime'))
+            )
+        """)
+
+def _db_save(job: dict) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("""
+            INSERT INTO jobs (job_id, status, audio_file, result, error)
+            VALUES (:job_id, :status, :audio_file, :result, :error)
+            ON CONFLICT(job_id) DO UPDATE SET
+                status     = excluded.status,
+                audio_file = excluded.audio_file,
+                result     = excluded.result,
+                error      = excluded.error
+        """, {
+            "job_id":     job["job_id"],
+            "status":     job["status"],
+            "audio_file": job.get("audio_file"),
+            "result":     job.get("result"),
+            "error":      job.get("error"),
+        })
+
+def _db_get(job_id: str) -> dict | None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM jobs WHERE job_id = ?", (job_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+def _db_list() -> list[dict]:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM jobs ORDER BY created_at DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+# ── App-Start ─────────────────────────────────────────────────────────────────
+
+@app.on_event("startup")
+async def startup():
+    _init_db()
+    print(f"[Server] Datenbank: {DB_PATH.resolve()}")
+    print(f"[Server] Max. Upload: {MAX_UPLOAD_MB} MB")
 
 
 # ── Endpunkte ─────────────────────────────────────────────────────────────────
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "0.1.0"}
+    job_count = len(_db_list())
+    return {"status": "ok", "version": "0.2.0", "jobs": job_count}
 
 
 @app.post("/upload", status_code=202)
@@ -42,45 +104,53 @@ async def upload_audio(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
 ):
-    """Empfängt eine WAV-Datei und startet die Pipeline im Hintergrund."""
-    if not file.filename or not file.filename.endswith(".wav"):
+    """Empfängt eine WAV-Datei per Streaming und startet die Pipeline."""
+    if not file.filename or not file.filename.lower().endswith(".wav"):
         raise HTTPException(400, "Nur WAV-Dateien werden akzeptiert")
 
-    job_id = uuid.uuid4().hex[:8]
+    job_id     = uuid.uuid4().hex[:8]
     audio_path = UPLOAD_DIR / f"{job_id}_{file.filename}"
+    max_bytes  = MAX_UPLOAD_MB * 1024 * 1024
 
-    # Datei speichern
-    async with aiofiles.open(audio_path, "wb") as f:
-        content = await file.read()
-        await f.write(content)
+    # ── Streaming-Speicherung (kein read() in RAM) ────────────────────────────
+    total_bytes = 0
+    async with aiofiles.open(audio_path, "wb") as out:
+        while chunk := await file.read(65_536):   # 64 KB Chunks
+            total_bytes += len(chunk)
+            if total_bytes > max_bytes:
+                await out.close()
+                audio_path.unlink(missing_ok=True)
+                raise HTTPException(
+                    413, f"Datei zu groß (max. {MAX_UPLOAD_MB} MB)"
+                )
+            await out.write(chunk)
 
-    # Job registrieren
-    jobs[job_id] = {
+    print(f"[Upload] {job_id} – {audio_path.name} ({total_bytes/1024:.1f} KB)")
+
+    job = {
         "job_id":     job_id,
         "status":     "queued",
         "audio_file": str(audio_path),
         "result":     None,
         "error":      None,
     }
+    _db_save(job)
 
-    # Pipeline asynchron starten
     background_tasks.add_task(_run_job, job_id, audio_path)
-
     return {"job_id": job_id, "status": "queued"}
 
 
 @app.get("/status/{job_id}")
 async def job_status(job_id: str):
-    """Gibt den aktuellen Status eines Jobs zurück."""
-    if job_id not in jobs:
+    job = _db_get(job_id)
+    if not job:
         raise HTTPException(404, "Job nicht gefunden")
-    return jobs[job_id]
+    return job
 
 
 @app.get("/results/{job_id}")
 async def get_result(job_id: str):
-    """Liefert die fertige Markdown-Datei zurück."""
-    job = jobs.get(job_id)
+    job = _db_get(job_id)
     if not job:
         raise HTTPException(404, "Job nicht gefunden")
     if job["status"] != "done":
@@ -93,17 +163,29 @@ async def get_result(job_id: str):
 
 @app.get("/results/")
 async def list_results():
-    """Listet alle abgeschlossenen Jobs."""
-    return [
-        {"job_id": jid, "status": j["status"], "result": j["result"]}
-        for jid, j in jobs.items()
-    ]
+    return _db_list()
+
+
+@app.delete("/results/{job_id}", status_code=204)
+async def delete_result(job_id: str):
+    """Löscht Job-Eintrag sowie Audio- und Ergebnis-Datei."""
+    job = _db_get(job_id)
+    if not job:
+        raise HTTPException(404, "Job nicht gefunden")
+    # Dateien löschen
+    if job.get("audio_file"):
+        Path(job["audio_file"]).unlink(missing_ok=True)
+    if job.get("result"):
+        Path(job["result"]).unlink(missing_ok=True)
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
 
 
 # ── Hintergrundverarbeitung ───────────────────────────────────────────────────
 
 async def _run_job(job_id: str, audio_path: Path):
-    jobs[job_id]["status"] = "processing"
+    _db_save({"job_id": job_id, "status": "processing",
+              "audio_file": str(audio_path), "result": None, "error": None})
     try:
         output_path = await asyncio.to_thread(
             run_pipeline,
@@ -111,11 +193,13 @@ async def _run_job(job_id: str, audio_path: Path):
             output_dir=OUTPUT_DIR,
             job_id=job_id,
         )
-        jobs[job_id]["status"] = "done"
-        jobs[job_id]["result"] = str(output_path)
+        _db_save({"job_id": job_id, "status": "done",
+                  "audio_file": str(audio_path),
+                  "result": str(output_path), "error": None})
     except Exception as exc:
-        jobs[job_id]["status"] = "failed"
-        jobs[job_id]["error"]  = str(exc)
+        _db_save({"job_id": job_id, "status": "failed",
+                  "audio_file": str(audio_path),
+                  "result": None, "error": str(exc)})
         raise
 
 

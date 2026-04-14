@@ -4,25 +4,22 @@
 
 // ── Farbpalette ───────────────────────────────────────────────────────────────
 static const uint32_t C_BG       = TFT_BLACK;
-static const uint32_t C_HDR_IDLE = 0x2945;  // Dunkelblaugrau
+static const uint32_t C_HDR_IDLE = 0x2945;
 static const uint32_t C_HDR_REC  = TFT_RED;
-static const uint32_t C_HDR_OK   = 0x2724;  // Dunkelgrün
-static const uint32_t C_HDR_WARN = 0xC600;  // Orange
-static const uint32_t C_SEL_BG   = 0x0319;  // Auswahlbalken (dunkles Blau)
-static const uint32_t C_SEL_TXT  = TFT_WHITE;
-static const uint32_t C_DIM      = 0x8410;  // Gedimmt (grau)
-static const uint32_t C_HINT     = 0x528A;  // Hinweistext
+static const uint32_t C_HDR_OK   = 0x2724;
+static const uint32_t C_HDR_WARN = 0xC600;
+static const uint32_t C_HDR_POLL = 0xC5E0;  // Goldgelb
+static const uint32_t C_SEL_BG   = 0x0319;
+static const uint32_t C_DIM      = 0x8410;
+static const uint32_t C_HINT     = 0x528A;
 
-// Display-Dimensionen
 static const int W = 240;
 static const int H = 135;
 
 // ── Hilfsfunktionen ───────────────────────────────────────────────────────────
 static auto& D() { return M5Cardputer.Display; }
 
-static void clear() {
-    D().fillScreen(C_BG);
-}
+static void clear() { D().fillScreen(C_BG); }
 
 static void drawHeader(const char* title, uint32_t color) {
     D().fillRect(0, 0, W, 22, color);
@@ -34,33 +31,67 @@ static void drawHeader(const char* title, uint32_t color) {
 }
 
 static void drawFooter(const char* hint) {
-    D().fillRect(0, H - 16, W, 16, 0x2104);  // sehr dunkles grau
+    D().fillRect(0, H - 16, W, 16, 0x2104);
     D().setTextColor(C_HINT, 0x2104);
     D().setTextSize(1);
-    D().setCursor(6, H - 11);
+    D().setCursor(4, H - 11);
     D().print(hint);
     D().setTextColor(TFT_WHITE, C_BG);
+}
+
+// Balken von x,y mit Breite barW, Füllstand 0–100, Farbe
+static void drawBar(int x, int y, int barW, int h,
+                    int pct, uint32_t fillColor) {
+    D().drawRect(x, y, barW, h, C_DIM);
+    int fill = barW * pct / 100;
+    if (fill > 0) D().fillRect(x + 1, y + 1, fill - 1, h - 2, fillColor);
+    if (fill < barW - 1)
+        D().fillRect(x + 1 + fill, y + 1, barW - 2 - fill, h - 2, C_BG);
+}
+
+// Batterie-Indikator oben rechts im Header (12×8 px)
+static void drawBattery(int pct, bool charging) {
+    int bx = W - 30;
+    int by = 7;
+    // Umriss
+    D().drawRect(bx, by, 20, 8, TFT_WHITE);
+    D().fillRect(bx + 20, by + 2, 2, 4, TFT_WHITE);  // Pol
+
+    uint32_t col = (pct > 50) ? TFT_GREEN
+                 : (pct > 20) ? TFT_YELLOW
+                              : TFT_RED;
+    int fill = 18 * pct / 100;
+    D().fillRect(bx + 1, by + 1, fill, 6, col);
+    D().fillRect(bx + 1 + fill, by + 1, 18 - fill, 6, C_BG);
+
+    // Ladepfeil wenn charging
+    if (charging) {
+        D().setTextColor(TFT_WHITE, col);
+        D().setTextSize(1);
+        D().setCursor(bx + 5, by);
+        D().print("+");
+    }
+
+    // Prozentzahl neben Batterie
+    D().setTextColor(TFT_WHITE, C_HDR_IDLE);
+    D().setTextSize(1);
+    D().setCursor(W - 8 - (pct < 10 ? 6 : pct < 100 ? 12 : 18), by);
+    if (pct >= 0) D().printf("%d%%", pct);
 }
 
 static void drawInputField(int y, const char* label,
                             const String& value, bool active) {
     uint32_t border = active ? TFT_CYAN : C_DIM;
-    // Rahmen
     D().drawRect(6, y, W - 12, 22, border);
-    // Label links im Rahmen
     D().setTextColor(active ? TFT_CYAN : C_DIM, C_BG);
     D().setTextSize(1);
     D().setCursor(10, y + 3);
     D().print(label);
-    // Wert
     D().setTextColor(TFT_WHITE, C_BG);
-    D().setCursor(10 + strlen(label) * 6 + 4, y + 3);
-    D().fillRect(10 + strlen(label) * 6 + 4, y + 1,
-                 W - 12 - 10 - strlen(label) * 6 - 4, 20, C_BG);
-    // Cursor-Indikator wenn aktiv
-    String display_val = value;
-    if (active) display_val += "_";
-    D().print(display_val);
+    int valX = 10 + strlen(label) * 6 + 4;
+    D().fillRect(valX, y + 1, W - 12 - valX + 6, 20, C_BG);
+    D().setCursor(valX, y + 3);
+    D().print(value + (active ? "_" : ""));
 }
 
 // ── Öffentliche Funktionen ────────────────────────────────────────────────────
@@ -72,115 +103,125 @@ void Display::init() {
     clear();
 }
 
-void Display::showMenu(const char* const items[], int count, int selected) {
+void Display::showMenu(const char* const items[], int count, int selected,
+                       int battPct, bool charging) {
     clear();
-    drawHeader("Diktiergeraet", C_HDR_IDLE);
+    D().fillRect(0, 0, W, 22, C_HDR_IDLE);
+    D().setTextColor(TFT_WHITE, C_HDR_IDLE);
+    D().setTextSize(1);
+    D().setCursor(6, 7);
+    D().print("Diktiergeraet");
+    if (battPct >= 0) drawBattery(battPct, charging);
+    D().setTextColor(TFT_WHITE, C_BG);
 
-    const int ITEM_H   = 24;
-    const int START_Y  = 24;
+    const int ITEM_H  = 22;
+    const int START_Y = 23;
 
     for (int i = 0; i < count; i++) {
-        int y   = START_Y + i * ITEM_H;
+        int  y   = START_Y + i * ITEM_H;
         bool sel = (i == selected);
-
-        // Hintergrund
         D().fillRect(0, y, W, ITEM_H, sel ? C_SEL_BG : C_BG);
-
-        // Auswahl-Markierung
-        if (sel) {
-            D().fillRect(0, y, 4, ITEM_H, TFT_CYAN);
-        }
-
-        // Nummerierung + Text
-        D().setTextColor(sel ? C_SEL_TXT : C_DIM, sel ? C_SEL_BG : C_BG);
-        D().setTextSize(1);
-        D().setCursor(10, y + 8);
+        if (sel) D().fillRect(0, y, 4, ITEM_H, TFT_CYAN);
+        D().setTextColor(sel ? TFT_WHITE : C_DIM, sel ? C_SEL_BG : C_BG);
+        D().setCursor(10, y + 7);
         D().printf("%d. %s", i + 1, items[i]);
     }
 
-    // Footer
-    drawFooter("W/S Navigieren   ENTER Auswaehlen");
+    drawFooter("W/S Nav   1-5 Direkt   ENTER OK");
     D().setTextColor(TFT_WHITE, C_BG);
 }
 
-void Display::showRecording(uint32_t seconds) {
+void Display::showRecording(uint32_t seconds, int gain, int level) {
     clear();
-
-    // Header mit blinkendem Punkt (wird durch updateRecordingTime aktualisiert)
     drawHeader("  RECORDING", C_HDR_REC);
 
-    // Zeitanzeige groß und zentriert
+    // Große Zeitanzeige
     char buf[8];
     snprintf(buf, sizeof(buf), "%02lu:%02lu", seconds / 60, seconds % 60);
-
     D().setTextSize(3);
+    int tw = strlen(buf) * 18;
+    D().setCursor((W - tw) / 2, 38);
     D().setTextColor(TFT_WHITE, C_BG);
-    // Horizontale Zentrierung (3*6px = 18px pro Zeichen bei Größe 3)
-    int text_w = strlen(buf) * 18;
-    D().setCursor((W - text_w) / 2, 50);
     D().print(buf);
     D().setTextSize(1);
+
+    // VU-Meter
+    D().setTextColor(C_DIM, C_BG);
+    D().setCursor(6, 82);
+    D().print("Pegel:");
+    uint32_t vuColor = (level < 70) ? TFT_GREEN
+                     : (level < 90) ? TFT_YELLOW
+                                    : TFT_RED;
+    drawBar(50, 80, W - 56, 10, level, vuColor);
+
+    // Gain-Anzeige
+    D().setTextColor(C_DIM, C_BG);
+    D().setCursor(6, 96);
+    D().printf("Gain: %dx", gain);
+    D().setTextColor(C_HINT, C_BG);
+    D().setCursor(60, 96);
+    D().print("(+/- anpassen)");
 
     drawFooter("ENTER = Aufnahme stoppen");
     D().setTextColor(TFT_WHITE, C_BG);
 }
 
-void Display::updateRecordingTime(uint32_t seconds) {
-    // Nur das Zeitfeld neu zeichnen – kein clear() um Flimmern zu vermeiden
-    char buf[8];
-    snprintf(buf, sizeof(buf), "%02lu:%02lu", seconds / 60, seconds % 60);
-
-    D().setTextSize(3);
-
-    // Blinkendes Recording-Symbol (jede Sekunde)
+void Display::updateRecording(uint32_t seconds, int gain, int level) {
+    // Blinkendes Aufnahmesymbol
     bool blink = (seconds % 2 == 0);
-    D().fillRect(0, 0, 22, 22, C_HDR_REC);  // Header-Bereich
+    D().fillRect(0, 0, 22, 22, C_HDR_REC);
     D().setTextColor(blink ? TFT_WHITE : C_HDR_REC, C_HDR_REC);
     D().setTextSize(1);
     D().setCursor(6, 7);
-    D().print("●");
+    D().print("*");
     D().setTextColor(TFT_WHITE, C_HDR_REC);
     D().setCursor(18, 7);
     D().print(" RECORDING");
 
     // Zeit aktualisieren
-    D().setTextColor(TFT_WHITE, C_BG);
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%02lu:%02lu", seconds / 60, seconds % 60);
     D().setTextSize(3);
-    int text_w = strlen(buf) * 18;
-    D().fillRect(0, 45, W, 30, C_BG);
-    D().setCursor((W - text_w) / 2, 50);
+    D().setTextColor(TFT_WHITE, C_BG);
+    int tw = strlen(buf) * 18;
+    D().fillRect(0, 34, W, 34, C_BG);
+    D().setCursor((W - tw) / 2, 38);
     D().print(buf);
     D().setTextSize(1);
+
+    // VU-Meter (nur Bar neu zeichnen)
+    uint32_t vuColor = (level < 70) ? TFT_GREEN
+                     : (level < 90) ? TFT_YELLOW
+                                    : TFT_RED;
+    drawBar(50, 80, W - 56, 10, level, vuColor);
+
+    // Gain (nur wenn nötig; hier immer aktuell)
+    D().fillRect(6, 94, 100, 10, C_BG);
+    D().setTextColor(C_DIM, C_BG);
+    D().setCursor(6, 96);
+    D().printf("Gain: %dx", gain);
 }
 
 void Display::showConfirmUpload(const String& filename) {
     clear();
     drawHeader("Aufnahme beendet", C_HDR_WARN);
-
     D().setTextSize(1);
     D().setTextColor(TFT_WHITE, C_BG);
-    D().setCursor(6, 32);
+    D().setCursor(6, 30);
     D().print("Datei uebermitteln?");
-
     D().setTextColor(C_DIM, C_BG);
-    D().setCursor(6, 48);
-    // Nur Dateiname (ohne Pfad) anzeigen
+    D().setCursor(6, 46);
     int slash = filename.lastIndexOf('/');
     D().print(filename.substring(slash + 1));
 
-    // Ja/Nein Buttons
-    D().fillRect(10,  75, 90, 28, 0x2724);  // Grün für Ja
-    D().fillRect(140, 75, 90, 28, 0x6000);  // Rot für Nein
-
+    D().fillRect(10,  73, 90, 28, 0x2724);
+    D().fillRect(140, 73, 90, 28, 0x6000);
     D().setTextColor(TFT_WHITE, 0x2724);
-    D().setTextSize(1);
-    D().setCursor(38, 85);
+    D().setCursor(36, 83);
     D().print("[J] Ja");
-
     D().setTextColor(TFT_WHITE, 0x6000);
-    D().setCursor(161, 85);
+    D().setCursor(159, 83);
     D().print("[N] Nein");
-
     D().setTextColor(TFT_WHITE, C_BG);
 }
 
@@ -191,7 +232,6 @@ void Display::showUploading() {
     D().setTextColor(TFT_CYAN, C_BG);
     D().setCursor(6, 38);
     D().print("Sende Datei an Server...");
-    // Einfacher Fortschrittsbalken (animiert in main.cpp durch Neuzeichnen)
     D().drawRect(10, 60, W - 20, 12, C_DIM);
     D().setTextColor(C_DIM, C_BG);
     D().setCursor(6, 80);
@@ -200,98 +240,178 @@ void Display::showUploading() {
 
 void Display::showUploadOk(const String& jobId) {
     clear();
-    drawHeader("Erfolgreich!", C_HDR_OK);
-
+    drawHeader("Hochgeladen!", C_HDR_OK);
     D().setTextSize(1);
     D().setTextColor(TFT_GREEN, C_BG);
-    D().setCursor(6, 35);
+    D().setCursor(6, 33);
     D().print("Datei uebermittelt");
-
     D().setTextColor(C_DIM, C_BG);
-    D().setCursor(6, 53);
+    D().setCursor(6, 49);
     D().print("Job-ID:");
     D().setTextColor(TFT_WHITE, C_BG);
-    D().setCursor(50, 53);
+    D().setCursor(52, 49);
     D().print(jobId.length() > 0 ? jobId : "---");
-
-    drawFooter("Weiter mit ENTER");
+    D().setTextColor(TFT_CYAN, C_BG);
+    D().setCursor(6, 65);
+    D().print("Pruefe Server-Status...");
+    drawFooter("ENTER = Zum Menu (laeuft weiter)");
     D().setTextColor(TFT_WHITE, C_BG);
 }
 
 void Display::showUploadFail(const String& reason) {
     clear();
     drawHeader("Fehler!", C_HDR_REC);
-
     D().setTextSize(1);
     D().setTextColor(TFT_RED, C_BG);
-    D().setCursor(6, 35);
+    D().setCursor(6, 33);
     D().print("Uebertragung fehlgeschl.");
-
     D().setTextColor(C_DIM, C_BG);
-    D().setCursor(6, 53);
+    D().setCursor(6, 49);
     D().print(reason.substring(0, 36));
-
     D().setTextColor(TFT_YELLOW, C_BG);
-    D().setCursor(6, 71);
+    D().setCursor(6, 65);
     D().print("Datei in Queue gespeichert.");
+    drawFooter("ENTER = Zurueck");
+    D().setTextColor(TFT_WHITE, C_BG);
+}
 
-    drawFooter("Weiter mit ENTER");
+void Display::showJobPoll(const String& jobId, const String& status,
+                          uint32_t elapsedSec) {
+    // Nur den Status-Bereich neu zeichnen (Header bleibt)
+    D().fillRect(0, 23, W, H - 39, C_BG);
+
+    D().setTextSize(1);
+    D().setTextColor(C_DIM, C_BG);
+    D().setCursor(6, 27);
+    D().print("Job: ");
+    D().setTextColor(TFT_WHITE, C_BG);
+    D().print(jobId);
+
+    // Status mit Icon
+    String icon;
+    uint32_t col;
+    if (status == "queued")     { icon = "[ ]"; col = C_DIM;      }
+    else if (status == "processing") { icon = "[~]"; col = TFT_CYAN;  }
+    else if (status == "done")  { icon = "[OK]"; col = TFT_GREEN;  }
+    else                        { icon = "[!!]"; col = TFT_RED;    }
+
+    D().setTextSize(1);
+    D().setTextColor(col, C_BG);
+    D().setCursor(6, 45);
+    D().printf("%s %s", icon.c_str(), status.c_str());
+
+    // Wartezeit
+    D().setTextColor(C_DIM, C_BG);
+    D().setCursor(6, 63);
+    D().printf("Warte: %lus", elapsedSec);
+
+    // Drehende Animation
+    const char spinner[] = "|/-\\";
+    D().setCursor(W - 16, 45);
+    D().setTextColor(TFT_CYAN, C_BG);
+    D().print(spinner[(elapsedSec) % 4]);
+
+    D().setTextColor(TFT_WHITE, C_BG);
+}
+
+void Display::showFileList(const std::vector<RecFileEntry>& files,
+                           int selected, int offset) {
+    clear();
+
+    char hdr[32];
+    snprintf(hdr, sizeof(hdr), "Aufnahmen (%d)", (int)files.size());
+    drawHeader(hdr, C_HDR_IDLE);
+
+    if (files.empty()) {
+        D().setTextColor(C_DIM, C_BG);
+        D().setCursor(6, 55);
+        D().print("Keine Aufnahmen auf SD.");
+        drawFooter("ESC = Zurueck");
+        D().setTextColor(TFT_WHITE, C_BG);
+        return;
+    }
+
+    const int ITEM_H  = 22;
+    const int START_Y = 23;
+    const int VISIBLE = (H - START_Y - 16) / ITEM_H;  // sichtbare Zeilen
+
+    for (int i = 0; i < VISIBLE; i++) {
+        int idx = offset + i;
+        if (idx >= (int)files.size()) break;
+
+        int  y   = START_Y + i * ITEM_H;
+        bool sel = (idx == selected);
+
+        D().fillRect(0, y, W, ITEM_H, sel ? C_SEL_BG : C_BG);
+        if (sel) D().fillRect(0, y, 4, ITEM_H, TFT_CYAN);
+
+        D().setTextColor(sel ? TFT_WHITE : C_DIM, sel ? C_SEL_BG : C_BG);
+        D().setTextSize(1);
+        D().setCursor(10, y + 4);
+        // Dateiname (max. 22 Zeichen) + Größe rechtsbündig
+        String name = files[idx].name;
+        if (name.length() > 22) name = name.substring(0, 20) + "..";
+        D().print(name);
+
+        // Größe rechtsbündig
+        char sz[10];
+        if (files[idx].sizeKB >= 1024)
+            snprintf(sz, sizeof(sz), "%d.%dM",
+                     files[idx].sizeKB / 1024,
+                     (files[idx].sizeKB % 1024) * 10 / 1024);
+        else
+            snprintf(sz, sizeof(sz), "%dK", files[idx].sizeKB);
+        D().setCursor(W - strlen(sz) * 6 - 6, y + 4);
+        D().print(sz);
+    }
+
+    // Scroll-Indikator
+    if ((int)files.size() > VISIBLE) {
+        D().setTextColor(C_DIM, C_BG);
+        D().setCursor(W - 10, START_Y);
+        D().print(offset > 0 ? "^" : " ");
+        D().setCursor(W - 10, H - 20);
+        D().print(offset + VISIBLE < (int)files.size() ? "v" : " ");
+    }
+
+    drawFooter("W/S Nav   ENTER Senden   ESC Zurueck");
     D().setTextColor(TFT_WHITE, C_BG);
 }
 
 void Display::showWifiSetup(const String& ssid, const String& pass, int field) {
     clear();
     drawHeader("WLAN einrichten", C_HDR_IDLE);
-
     D().setTextSize(1);
     D().setTextColor(C_DIM, C_BG);
     D().setCursor(6, 27);
-    D().print("Tastatur: Text eingeben, DEL=loeschen");
-
-    drawInputField(42,  "SSID: ", ssid, field == 0);
-    drawInputField(72,  "Pass: ", String("*").length() > 0
-                        ? String(pass.length(), '*')
-                        : pass, field == 1);
-
-    drawFooter("TAB=Feld wechseln  ENTER=Verbinden  ESC=Zurueck");
+    D().print("DEL=loeschen  TAB=Feld  ENTER=Weiter");
+    drawInputField(40, "SSID: ", ssid, field == 0);
+    drawInputField(70, "Pass: ", String(pass.length(), '*'), field == 1);
+    drawFooter("ENTER auf Pass = Verbinden");
     D().setTextColor(TFT_WHITE, C_BG);
 }
 
 void Display::showServerCheck(const String& host, int port) {
     clear();
     drawHeader("Server pruefen", C_HDR_IDLE);
-
     D().setTextSize(1);
     D().setTextColor(TFT_WHITE, C_BG);
-    D().setCursor(6, 32);
+    D().setCursor(6, 30);
     D().printf("Host: %s:%d", host.c_str(), port);
-
     D().setTextColor(TFT_CYAN, C_BG);
-    D().setCursor(6, 52);
+    D().setCursor(6, 50);
     D().print("Verbinde...");
 }
 
 void Display::showServerResult(bool ok, const String& detail) {
-    // Nur das Ergebnis aktualisieren, Header bleibt
-    D().fillRect(0, 50, W, 65, C_BG);
-
+    D().fillRect(0, 48, W, H - 64, C_BG);
     D().setTextSize(1);
-    if (ok) {
-        D().setTextColor(TFT_GREEN, C_BG);
-        D().setCursor(6, 52);
-        D().print("Server erreichbar");
-        D().setTextColor(C_DIM, C_BG);
-        D().setCursor(6, 68);
-        D().print(detail.substring(0, 38));
-    } else {
-        D().setTextColor(TFT_RED, C_BG);
-        D().setCursor(6, 52);
-        D().print("Nicht erreichbar!");
-        D().setTextColor(C_DIM, C_BG);
-        D().setCursor(6, 68);
-        D().print(detail.substring(0, 38));
-    }
-
+    D().setTextColor(ok ? TFT_GREEN : TFT_RED, C_BG);
+    D().setCursor(6, 50);
+    D().print(ok ? "Server erreichbar  OK" : "Nicht erreichbar!");
+    D().setTextColor(C_DIM, C_BG);
+    D().setCursor(6, 66);
+    D().print(detail.substring(0, 38));
     drawFooter("ENTER = Zurueck");
     D().setTextColor(TFT_WHITE, C_BG);
 }
@@ -300,7 +420,6 @@ void Display::showSdResult(bool ok, const String& cardType,
                            uint64_t totalMB, uint64_t usedMB, int recFiles) {
     clear();
     drawHeader("SD-Karte", ok ? C_HDR_OK : C_HDR_REC);
-
     D().setTextSize(1);
 
     if (!ok) {
@@ -308,47 +427,28 @@ void Display::showSdResult(bool ok, const String& cardType,
         D().setCursor(6, 35);
         D().print("Keine SD-Karte gefunden!");
     } else {
-        uint64_t freeMB = totalMB - usedMB;
+        uint64_t freeMB  = totalMB - usedMB;
+        uint32_t freePct = (totalMB > 0) ? (uint32_t)(freeMB * 100 / totalMB) : 0;
 
-        // Typ & Größe
-        D().setTextColor(C_DIM, C_BG);
-        D().setCursor(6, 28);
-        D().print("Typ:");
-        D().setTextColor(TFT_WHITE, C_BG);
-        D().setCursor(40, 28);
-        D().print(cardType);
+        D().setTextColor(C_DIM, C_BG); D().setCursor(6, 27); D().print("Typ:");
+        D().setTextColor(TFT_WHITE, C_BG); D().setCursor(40, 27); D().print(cardType);
 
-        D().setTextColor(C_DIM, C_BG);
-        D().setCursor(6, 44);
-        D().print("Gesamt:");
-        D().setTextColor(TFT_WHITE, C_BG);
-        D().setCursor(52, 44);
+        D().setTextColor(C_DIM, C_BG); D().setCursor(6, 43); D().print("Gesamt:");
+        D().setTextColor(TFT_WHITE, C_BG); D().setCursor(52, 43);
         D().printf("%llu MB", totalMB);
 
-        D().setTextColor(C_DIM, C_BG);
-        D().setCursor(6, 60);
-        D().print("Frei:");
-        // Farbcodierung: grün > 20%, gelb > 5%, rot ≤ 5%
-        uint32_t freeColor = (freeMB * 100 / totalMB > 20) ? TFT_GREEN
-                           : (freeMB * 100 / totalMB >  5) ? TFT_YELLOW
-                                                            : TFT_RED;
-        D().setTextColor(freeColor, C_BG);
-        D().setCursor(40, 60);
-        D().printf("%llu MB  (%llu%%)", freeMB, freeMB * 100 / totalMB);
+        uint32_t freeColor = (freePct > 20) ? TFT_GREEN
+                           : (freePct >  5) ? TFT_YELLOW
+                                            : TFT_RED;
+        D().setTextColor(C_DIM, C_BG); D().setCursor(6, 59); D().print("Frei:");
+        D().setTextColor(freeColor, C_BG); D().setCursor(40, 59);
+        D().printf("%llu MB (%lu%%)", freeMB, freePct);
 
-        // Aufnahmen
-        D().setTextColor(C_DIM, C_BG);
-        D().setCursor(6, 76);
-        D().print("Aufnahmen:");
-        D().setTextColor(TFT_WHITE, C_BG);
-        D().setCursor(70, 76);
-        D().printf("%d Dateien in /rec", recFiles);
+        D().setTextColor(C_DIM, C_BG); D().setCursor(6, 75); D().print("Aufnahmen:");
+        D().setTextColor(TFT_WHITE, C_BG); D().setCursor(70, 75);
+        D().printf("%d in /rec", recFiles);
 
-        // Fortschrittsbalken Speicher
-        int barW = W - 20;
-        int fillW = (int)(barW * usedMB / totalMB);
-        D().drawRect(10, 95, barW, 10, C_DIM);
-        D().fillRect(11, 96, fillW, 8, freeColor);
+        drawBar(10, 93, W - 20, 10, 100 - freePct, freeColor);
     }
 
     drawFooter("ENTER = Zurueck");
