@@ -28,6 +28,11 @@ namespace Display {
     void showServerCheck(const String& host, int port);
     void showServerResult(bool ok, const String& detail);
 
+    // ── SD-Karten-Check ───────────────────────────────────────────────────────
+    // totalMB/usedMB: Kapazität in MB, recFiles: Anzahl Dateien in /rec
+    void showSdResult(bool ok, const String& cardType,
+                      uint64_t totalMB, uint64_t usedMB, int recFiles);
+
     // ── Allgemein ─────────────────────────────────────────────────────────────
     void showMessage(const String& msg);       // Temporäre Info-Meldung
     void showError(const String& msg);         // Fehler-Anzeige

@@ -16,9 +16,10 @@ static const char* MENU_ITEMS[] = {
     "Aufnahme starten",
     "Datei uebermitteln",
     "WLAN einrichten",
-    "Server pruefen"
+    "Server pruefen",
+    "SD-Karte pruefen"
 };
-static const int MENU_COUNT = 4;
+static const int MENU_COUNT = 5;
 
 // ── Zustandsmaschine ─────────────────────────────────────────────────────────
 enum class AppState {
@@ -29,7 +30,8 @@ enum class AppState {
     UPLOAD_OK,
     UPLOAD_FAIL,
     WIFI_SETUP,
-    SERVER_CHECK
+    SERVER_CHECK,
+    SD_CHECK
 };
 
 // ── Globaler Zustand ──────────────────────────────────────────────────────────
@@ -229,6 +231,10 @@ void loop() {
                 Display::showServerCheck(SERVER_HOST, SERVER_PORT);
                 enterState(AppState::SERVER_CHECK);
                 break;
+
+            case 4:  // ── SD-Karte prüfen ──────────────────────────────────────
+                enterState(AppState::SD_CHECK);
+                break;
             }
         }
         break;
@@ -414,6 +420,53 @@ void loop() {
         // Warten auf ENTER → zurück zum Menü
         if (isEnter()) {
             checked = false;  // Reset für nächsten Aufruf
+            Display::showMenu(MENU_ITEMS, MENU_COUNT, g_menuIdx);
+            enterState(AppState::MENU);
+        }
+        break;
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    case AppState::SD_CHECK: {
+        static bool sdChecked = false;
+        if (!sdChecked && millis() - g_stateEnteredMs > 150) {
+            sdChecked = true;
+
+            // SD neu initialisieren um aktuellen Zustand zu prüfen
+            if (!SD.begin()) {
+                Display::showSdResult(false, "", 0, 0, 0);
+            } else {
+                // Kartentyp
+                String cardType;
+                switch (SD.cardType()) {
+                    case CARD_MMC:  cardType = "MMC";   break;
+                    case CARD_SD:   cardType = "SD";    break;
+                    case CARD_SDHC: cardType = "SDHC";  break;
+                    default:        cardType = "Unbekannt"; break;
+                }
+
+                uint64_t totalMB = SD.totalBytes() / (1024 * 1024);
+                uint64_t usedMB  = SD.usedBytes()  / (1024 * 1024);
+
+                // Dateien in /rec zählen
+                int recFiles = 0;
+                File dir = SD.open(REC_DIR);
+                if (dir) {
+                    File f = dir.openNextFile();
+                    while (f) {
+                        if (!f.isDirectory()) recFiles++;
+                        f.close();
+                        f = dir.openNextFile();
+                    }
+                    dir.close();
+                }
+
+                Display::showSdResult(true, cardType, totalMB, usedMB, recFiles);
+            }
+        }
+
+        if (isEnter()) {
+            sdChecked = false;
             Display::showMenu(MENU_ITEMS, MENU_COUNT, g_menuIdx);
             enterState(AppState::MENU);
         }

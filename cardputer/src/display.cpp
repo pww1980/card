@@ -296,6 +296,65 @@ void Display::showServerResult(bool ok, const String& detail) {
     D().setTextColor(TFT_WHITE, C_BG);
 }
 
+void Display::showSdResult(bool ok, const String& cardType,
+                           uint64_t totalMB, uint64_t usedMB, int recFiles) {
+    clear();
+    drawHeader("SD-Karte", ok ? C_HDR_OK : C_HDR_REC);
+
+    D().setTextSize(1);
+
+    if (!ok) {
+        D().setTextColor(TFT_RED, C_BG);
+        D().setCursor(6, 35);
+        D().print("Keine SD-Karte gefunden!");
+    } else {
+        uint64_t freeMB = totalMB - usedMB;
+
+        // Typ & Größe
+        D().setTextColor(C_DIM, C_BG);
+        D().setCursor(6, 28);
+        D().print("Typ:");
+        D().setTextColor(TFT_WHITE, C_BG);
+        D().setCursor(40, 28);
+        D().print(cardType);
+
+        D().setTextColor(C_DIM, C_BG);
+        D().setCursor(6, 44);
+        D().print("Gesamt:");
+        D().setTextColor(TFT_WHITE, C_BG);
+        D().setCursor(52, 44);
+        D().printf("%llu MB", totalMB);
+
+        D().setTextColor(C_DIM, C_BG);
+        D().setCursor(6, 60);
+        D().print("Frei:");
+        // Farbcodierung: grün > 20%, gelb > 5%, rot ≤ 5%
+        uint32_t freeColor = (freeMB * 100 / totalMB > 20) ? TFT_GREEN
+                           : (freeMB * 100 / totalMB >  5) ? TFT_YELLOW
+                                                            : TFT_RED;
+        D().setTextColor(freeColor, C_BG);
+        D().setCursor(40, 60);
+        D().printf("%llu MB  (%llu%%)", freeMB, freeMB * 100 / totalMB);
+
+        // Aufnahmen
+        D().setTextColor(C_DIM, C_BG);
+        D().setCursor(6, 76);
+        D().print("Aufnahmen:");
+        D().setTextColor(TFT_WHITE, C_BG);
+        D().setCursor(70, 76);
+        D().printf("%d Dateien in /rec", recFiles);
+
+        // Fortschrittsbalken Speicher
+        int barW = W - 20;
+        int fillW = (int)(barW * usedMB / totalMB);
+        D().drawRect(10, 95, barW, 10, C_DIM);
+        D().fillRect(11, 96, fillW, 8, freeColor);
+    }
+
+    drawFooter("ENTER = Zurueck");
+    D().setTextColor(TFT_WHITE, C_BG);
+}
+
 void Display::showMessage(const String& msg) {
     clear();
     D().setTextSize(1);
