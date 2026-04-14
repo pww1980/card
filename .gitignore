@@ -1,0 +1,17 @@
+# ── Cardputer / PlatformIO ────────────────────────────────────────────────────
+cardputer/.pio/
+cardputer/.vscode/
+cardputer/include/secrets.h   # Hier echte Zugangsdaten ablegen (nie committen)
+
+# ── Python Server ─────────────────────────────────────────────────────────────
+server/.env                   # Echte Zugangsdaten (von .env.example kopieren)
+server/__pycache__/
+server/**/__pycache__/
+server/*.pyc
+server/uploads/               # Hochgeladene Audio-Dateien
+server/output/                # Erzeugte Markdown-Dateien
+server/models/                # Gecachte Whisper-Modelle (groß)
+
+# ── Allgemein ─────────────────────────────────────────────────────────────────
+.DS_Store
+*.log

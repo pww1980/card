@@ -1,0 +1,18 @@
+[Unit]
+Description=Cardputer Diktiergeraet Server
+After=network.target ollama.service
+Wants=ollama.service
+
+[Service]
+Type=simple
+# Pfad anpassen:
+WorkingDirectory=/opt/cardputer/server
+ExecStart=/opt/cardputer/server/.venv/bin/python main.py
+EnvironmentFile=/opt/cardputer/server/.env
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

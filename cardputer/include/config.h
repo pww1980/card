@@ -32,6 +32,8 @@
 #define ES8311_I2C_ADDR 0x18
 
 // ── SD-Karte ─────────────────────────────────────────────────────────────────
+// GPIO 12 = SD CS-Pin des M5Cardputer (Standard + ADV)
+#define SD_CS_PIN  12
 #define REC_DIR    "/rec"
 #define QUEUE_FILE "/rec/queue.txt"   // Offline-Upload-Queue
 
