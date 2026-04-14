@@ -1,0 +1,17 @@
+# Server
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+python-multipart>=0.0.9
+
+# Transkription
+faster-whisper>=1.0.0
+
+# Sprechererkennung (Phase 2, optional)
+pyannote.audio>=3.1.0
+
+# LLM (Ollama-Client)
+ollama>=0.2.0
+
+# Hilfspakete
+python-dotenv>=1.0.0
+aiofiles>=23.2.0
