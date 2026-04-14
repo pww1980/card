@@ -33,12 +33,32 @@ Markdown-Datei. Optional wird später ein Web-Dashboard ergänzt.
 
 ### 1. Cardputer ADV (PlatformIO / C++)
 
-**Hardware:**
-- ESP32-S3 MCU
-- PDM-Mikrofon (eingebaut, ADV-Version)
-- 1.14" LCD (240×135, ST7789)
+**Hardware (verifiziert, Quelle: M5Unified Quellcode):**
+- MCU: ESP32-S3FN8 (Stamp-S3A Modul)
+- Audio-Codec: **ES8311** (ersetzt PDM-Mikrofon der Standard-Version)
+  - MEMS-Mikrofon mit hohem SNR
+  - NS4150B Verstärker + 1W Lautsprecher
+  - 3,5mm Klinkenausgang
+- Display: 1,14" LCD, 240×135, ST7789
 - MicroSD-Karte
-- USB-C / WiFi 802.11 b/g/n
+- IMU: integriert (neu gegenüber Standard-Version)
+- WiFi 802.11 b/g/n, verbesserte Antenne
+- Akku: 1.750 mAh (größer als Standard 1.000 mAh)
+- Tastatur: mechanisch, TCA8418 Controller
+
+**Bestätigte GPIO-Pinbelegung:**
+| Signal | GPIO | Anmerkung |
+|---|---|---|
+| I2S BCLK | 41 | Mic + Speaker |
+| I2S WS/LRCLK | 43 | Mic + Speaker |
+| I2S DOUT | 42 | → Speaker (DAC) |
+| I2S DIN | 46 | ← Mikrofon (ADC) |
+| I2S Port | I2S\_NUM\_1 | |
+| ES8311 I2C SDA | 9 | I2C\_NUM\_1 |
+| ES8311 I2C SCL | 8 | I2C\_NUM\_1, geteilt mit TCA8418 |
+| ES8311 I2C Addr | 0x18 | |
+| Ext. I2C SDA | 1 | Port A |
+| Ext. I2C SCL | 2 | Port A |
 
 **Aufnahme:**
 - Format: WAV, Mono, 16 kHz, 16-bit PCM
@@ -66,6 +86,17 @@ Markdown-Datei. Optional wird später ein Web-Dashboard ergänzt.
 ✓ Upload OK  #abc123     ← Server-Bestätigung mit Job-ID
 ✗ Upload FAIL (retry)    ← Fehlerfall
 ```
+
+**Audio-Architektur (ADV vs. Standard):**
+```
+Standard Cardputer:   ESP32-S3 ── PDM ──► SPM1423 (Mikrofon, direkt)
+                                           NS4168  (Speaker)
+
+Cardputer ADV:        ESP32-S3 ── I2S ──► ES8311 Codec ──► MEMS-Mikrofon
+                                  I2C ──► ES8311 Config        └──► Speaker (NS4150B)
+```
+→ Der ES8311 wird von M5Unified automatisch per I2C-Probe erkannt.
+  `M5Cardputer.Mic.begin()` konfiguriert Codec und I2S korrekt ohne manuelle Pin-Angabe.
 
 **Konfiguration (config.h):**
 ```cpp
