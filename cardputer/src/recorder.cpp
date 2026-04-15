@@ -23,12 +23,14 @@ struct WavHeader {
 
 // ── Zustandsvariablen ─────────────────────────────────────────────────────────
 static File      g_file;
-static bool      g_running   = false;
-static uint32_t  g_startMs   = 0;
-static uint32_t  g_dataBytes = 0;
+static bool      g_running    = false;
+static uint32_t  g_startMs    = 0;
+static uint32_t  g_dataBytes  = 0;
+static uint32_t  g_lastFlushMs = 0;
 
 static int       g_gain  = 4;    // Software-Gain 1–16
 static int       g_level = 0;    // Pegel 0–100 (letzter Buffer)
+static bool      g_writeError = false;
 
 static int16_t   g_buf[REC_BUFFER_SIZE];
 
@@ -37,7 +39,6 @@ static int16_t   g_buf[REC_BUFFER_SIZE];
 bool Recorder::start(const String& filePath) {
     if (g_running) return false;
 
-    // config() gibt einen rvalue zurück → per Copy holen, ändern, zurückschreiben
     auto mic_cfg = M5Cardputer.Mic.config();
     mic_cfg.sample_rate   = SAMPLE_RATE;
     mic_cfg.stereo        = false;
@@ -60,10 +61,12 @@ bool Recorder::start(const String& filePath) {
     WavHeader hdr;
     g_file.write(reinterpret_cast<const uint8_t*>(&hdr), sizeof(WavHeader));
 
-    g_dataBytes = 0;
-    g_level     = 0;
-    g_startMs   = millis();
-    g_running   = true;
+    g_dataBytes   = 0;
+    g_level       = 0;
+    g_writeError  = false;
+    g_startMs     = millis();
+    g_lastFlushMs = millis();
+    g_running     = true;
 
     Serial.printf("[Recorder] Start: %s  Gain: %dx\n", filePath.c_str(), g_gain);
     return true;
@@ -75,6 +78,9 @@ void Recorder::stop() {
 
     M5Cardputer.Mic.end();
 
+    // Letzten SD-Puffer leeren
+    g_file.flush();
+
     WavHeader hdr;
     hdr.dataSize  = g_dataBytes;
     hdr.chunkSize = g_dataBytes + sizeof(WavHeader) - 8;
@@ -82,21 +88,24 @@ void Recorder::stop() {
     g_file.write(reinterpret_cast<const uint8_t*>(&hdr), sizeof(WavHeader));
     g_file.close();
 
-    Serial.printf("[Recorder] Stop: %lu s  %lu Bytes\n",
-                  elapsedSeconds(), g_dataBytes);
+    Serial.printf("[Recorder] Stop: %lu s  %lu Bytes  Fehler: %s\n",
+                  elapsedSeconds(), g_dataBytes,
+                  g_writeError ? "ja" : "nein");
 }
 
 void Recorder::tick() {
-    if (!g_running) return;
+    if (!g_running || g_writeError) return;
 
-    if (!M5Cardputer.Mic.record(g_buf, REC_BUFFER_SIZE, SAMPLE_RATE, false))
+    // wait=true: blockiert (~256 ms bei 4096 Samples / 16 kHz) bis der
+    // I2S-DMA-Buffer voll ist. Verhindert das silent-dropout-Problem
+    // das bei wait=false nach kurzer Zeit auftrat.
+    if (!M5Cardputer.Mic.record(g_buf, REC_BUFFER_SIZE, SAMPLE_RATE, true))
         return;
 
-    // ── Software-Gain anwenden + Peak-Pegel berechnen ────────────────────────
+    // ── Software-Gain + Peak-Pegel ───────────────────────────────────────────
     int16_t peak = 0;
     for (int i = 0; i < REC_BUFFER_SIZE; i++) {
         int32_t s = (int32_t)g_buf[i] * g_gain;
-        // Clipping verhindern
         if      (s >  32767) s =  32767;
         else if (s < -32768) s = -32768;
         g_buf[i] = (int16_t)s;
@@ -104,21 +113,37 @@ void Recorder::tick() {
         int16_t a = (g_buf[i] < 0) ? -g_buf[i] : g_buf[i];
         if (a > peak) peak = a;
     }
-
-    // Peak auf 0–100 normalisieren (32767 = 100%)
     g_level = (int)((int32_t)peak * 100 / 32767);
 
-    size_t bytes = REC_BUFFER_SIZE * sizeof(int16_t);
-    g_file.write(reinterpret_cast<const uint8_t*>(g_buf), bytes);
-    g_dataBytes += bytes;
+    // ── SD schreiben ──────────────────────────────────────────────────────────
+    size_t bytes    = REC_BUFFER_SIZE * sizeof(int16_t);
+    size_t written  = g_file.write(reinterpret_cast<const uint8_t*>(g_buf), bytes);
+
+    if (written != bytes) {
+        // SD-Fehler: Aufnahme intern stoppen, WAV bleibt lesbar bis hierher
+        Serial.printf("[Recorder] FEHLER: write %u/%u Bytes – SD voll?\n",
+                      written, bytes);
+        g_writeError = true;
+        return;
+    }
+    g_dataBytes += (uint32_t)written;
+
+    // ── Periodischer Flush (alle 10 s) ────────────────────────────────────────
+    // Sichert Daten gegen Datenverlust bei unerwarteter Trennung.
+    if (millis() - g_lastFlushMs >= 10000) {
+        g_file.flush();
+        g_lastFlushMs = millis();
+    }
 }
 
+bool     Recorder::isRunning()  { return g_running && !g_writeError; }
+bool     Recorder::hasError()   { return g_writeError; }
 uint32_t Recorder::elapsedSeconds() {
     if (!g_running) return 0;
-    return (millis() - g_startMs) / 1000;
+    // Berechne aus tatsächlich geschriebenen Bytes statt millis(),
+    // damit die Anzeige bei Schreibfehlern nicht weiterläuft.
+    return g_dataBytes / (SAMPLE_RATE * CHANNELS * (BIT_DEPTH / 8));
 }
-
-bool Recorder::isRunning() { return g_running; }
 
 void Recorder::setGain(int gain) {
     g_gain = (gain < 1) ? 1 : (gain > 16) ? 16 : gain;

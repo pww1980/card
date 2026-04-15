@@ -15,7 +15,9 @@
 #define SAMPLE_RATE     16000   // Hz – optimal für Whisper
 #define BIT_DEPTH       16      // Bit
 #define CHANNELS        1       // Mono
-#define REC_BUFFER_SIZE 1024    // Samples pro Chunk (int16_t)
+// 4096 Samples = 256 ms pro I2S-Read (statt 64 ms bei 1024).
+// Größerer Buffer → weniger SD-Write-Overhead, stabiler bei langen Aufnahmen.
+#define REC_BUFFER_SIZE 4096
 
 // I2S – gemeinsamer Bus für Mic (DIN) und Speaker (DOUT)
 #define I2S_PORT        I2S_NUM_1

@@ -347,6 +347,16 @@ void loop() {
     case AppState::RECORDING: {
         Recorder::tick();
 
+        // SD-Schreibfehler (z.B. Karte voll): sofort stoppen und anzeigen
+        if (Recorder::hasError()) {
+            Recorder::stop();
+            Display::showError("SD-Fehler! Karte voll?");
+            delay(3000);
+            Display::showMenu(MENU_ITEMS, MENU_COUNT, g_menuIdx, g_battPct, g_charging);
+            enterState(AppState::MENU);
+            break;
+        }
+
         static uint32_t lastSec = 0;
         uint32_t sec = Recorder::elapsedSeconds();
         if (sec != lastSec) {
