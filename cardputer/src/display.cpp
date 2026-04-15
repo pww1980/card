@@ -94,6 +94,110 @@ static void drawInputField(int y, const char* label,
     D().print(value + (active ? "_" : ""));
 }
 
+// ── Icon-Zeichner ─────────────────────────────────────────────────────────────
+// idx 0–4 = Aufnahme / Dateien / WLAN / Server / SD-Karte
+// cx,cy = Mittelpunkt, sz = Größe des Icon-Quadrats, col = Vordergrund, bg = Hintergrund
+static void drawIcon(int idx, int cx, int cy, int sz, uint32_t col, uint32_t bg) {
+    switch (idx % 5) {
+
+    case 0: {  // Mikrofon – Aufnahme starten
+        int bw = max(3, sz * 3 / 14);
+        int bh = max(5, sz * 5 / 14);
+        int top = cy - bh - sz / 8;
+        // Kapsel
+        D().fillRoundRect(cx - bw, top, bw * 2, bh * 2, bw, col);
+        // Membran-Schlitze
+        if (sz >= 36) {
+            D().drawFastHLine(cx - bw + 2, top + bh / 2, bw * 2 - 4, bg);
+            D().drawFastHLine(cx - bw + 2, top + bh,     bw * 2 - 4, bg);
+            D().drawFastHLine(cx - bw + 2, top + bh * 3 / 2, bw * 2 - 4, bg);
+        }
+        // Ständer
+        D().fillRect(cx - 1, cy + bh - sz / 8, 3, sz / 5 + 1, col);
+        // Fuß
+        D().fillRect(cx - bw - 1, cy + bh - sz / 8 + sz / 5, bw * 2 + 2, 3, col);
+        break;
+    }
+
+    case 1: {  // Ordner – Aufnahmen ansehen
+        int fw  = sz * 6 / 14;
+        int fh  = sz * 5 / 14;
+        int tabW = fw * 3 / 4;
+        int tabH = max(3, sz / 9);
+        // Körper
+        D().fillRoundRect(cx - fw, cy - fh + tabH, fw * 2, fh * 2 - tabH, 3, col);
+        // Tab oben-links (überschreibt Header-Ecke des Körpers und zeichnet Tab)
+        D().fillRect(cx - fw - 1, cy - fh, fw + 1, tabH + 2, bg);
+        D().fillRoundRect(cx - fw, cy - fh, tabW, tabH + 2, 2, col);
+        // Dateilinien im Körper
+        if (sz >= 34) {
+            int lw = fw * 2 - 8;
+            D().drawFastHLine(cx - fw + 4, cy - fh + tabH + fh * 2 / 3,     lw, bg);
+            D().drawFastHLine(cx - fw + 4, cy - fh + tabH + fh * 4 / 3 + 1, lw, bg);
+        }
+        break;
+    }
+
+    case 2: {  // WLAN – WLAN einrichten
+        int yOff = sz * 3 / 10;
+        int dotR = max(2, sz / 12);
+        D().fillCircle(cx, cy + yOff, dotR, col);
+        // Drei konzentrische Kreise
+        int rads[3] = { sz / 6, sz * 2 / 7, sz * 3 / 7 };
+        for (int i = 0; i < 3; i++)
+            D().drawCircle(cx, cy + yOff, rads[i], col);
+        // Untere Hälfte ab Mittelpunkt abdecken (Kreisbögen → Bögen)
+        D().fillRect(cx - sz / 2 - 1, cy + yOff + dotR,
+                     sz + 2, sz / 2 - yOff + sz / 8 + 2, bg);
+        break;
+    }
+
+    case 3: {  // Server – Server prüfen
+        int sw     = sz * 11 / 16;
+        int rh     = max(4, sz / 5);
+        int gap    = max(2, sz / 16);
+        int totalH = 3 * rh + 2 * gap;
+        int y0     = cy - totalH / 2;
+        for (int i = 0; i < 3; i++) {
+            int ry = y0 + i * (rh + gap);
+            D().drawRoundRect(cx - sw / 2, ry, sw, rh, 2, col);
+            // Status-LED
+            D().fillCircle(cx + sw / 2 - 4, ry + rh / 2, 2, col);
+            // Disk-Slot-Linie
+            if (sz >= 34)
+                D().drawFastHLine(cx - sw / 2 + 3, ry + rh / 2, sw / 2, col);
+        }
+        break;
+    }
+
+    case 4: {  // SD-Karte – SD-Karte prüfen
+        int cw    = sz * 9 / 16;
+        int ch    = sz * 11 / 16;
+        int notch = max(3, sz / 6);
+        int x0    = cx - cw / 2;
+        int y0    = cy - ch / 2;
+        // Hauptkörper
+        D().fillRect(x0, y0, cw, ch, col);
+        // Rechte obere Ecke (Notch) abschneiden
+        D().fillTriangle(x0 + cw - notch, y0,
+                         x0 + cw, y0,
+                         x0 + cw, y0 + notch, bg);
+        // Schräge Kante
+        D().drawLine(x0 + cw - notch, y0, x0 + cw, y0 + notch, C_DIM);
+        // Kontaktstreifen (helle Streifen = Kontakte, dunkle Lücken)
+        if (sz >= 34) {
+            int nC  = 5;
+            int cGap = 1;
+            int cWid = (cw - 8 - (nC - 1) * cGap) / nC;
+            for (int i = 0; i < nC; i++)
+                D().fillRect(x0 + 4 + i * (cWid + cGap),
+                             y0 + ch * 3 / 5, cWid, ch / 5, bg);
+        }
+        break;
+    }
+    }
+}
+
 // ── Öffentliche Funktionen ────────────────────────────────────────────────────
 
 void Display::init() {
@@ -106,6 +210,8 @@ void Display::init() {
 void Display::showMenu(const char* const items[], int count, int selected,
                        int battPct, bool charging) {
     clear();
+
+    // ── Header ────────────────────────────────────────────────────────────────
     D().fillRect(0, 0, W, 22, C_HDR_IDLE);
     D().setTextColor(TFT_WHITE, C_HDR_IDLE);
     D().setTextSize(1);
@@ -114,20 +220,50 @@ void Display::showMenu(const char* const items[], int count, int selected,
     if (battPct >= 0) drawBattery(battPct, charging);
     D().setTextColor(TFT_WHITE, C_BG);
 
-    const int ITEM_H  = 22;
-    const int START_Y = 23;
+    // ── Auswahl-Hintergrund (Mitte) ───────────────────────────────────────────
+    D().fillRoundRect(82, 24, 76, 68, 6, C_SEL_BG);
+    D().fillRect(82, 26, 4, 64, TFT_CYAN);
 
-    for (int i = 0; i < count; i++) {
-        int  y   = START_Y + i * ITEM_H;
-        bool sel = (i == selected);
-        D().fillRect(0, y, W, ITEM_H, sel ? C_SEL_BG : C_BG);
-        if (sel) D().fillRect(0, y, 4, ITEM_H, TFT_CYAN);
-        D().setTextColor(sel ? TFT_WHITE : C_DIM, sel ? C_SEL_BG : C_BG);
-        D().setCursor(10, y + 7);
-        D().printf("%d. %s", i + 1, items[i]);
-    }
+    // ── Nachbar-Indizes (wrapping) ────────────────────────────────────────────
+    int idxL = (selected - 1 + count) % count;
+    int idxR = (selected + 1) % count;
 
-    drawFooter("W/S Nav   1-5 Direkt   ENTER OK");
+    // ── Icons ─────────────────────────────────────────────────────────────────
+    // Seitenicons: kleiner, gedimmt
+    drawIcon(idxL,    40, 56, 32, C_DIM,     C_BG);
+    drawIcon(selected, 120, 56, 44, TFT_WHITE, C_SEL_BG);
+    drawIcon(idxR,   200, 56, 32, C_DIM,     C_BG);
+
+    // ── Navigationspfeile ─────────────────────────────────────────────────────
+    D().setTextSize(2);
+    D().setTextColor(C_DIM, C_BG);
+    D().setCursor(1, 48);
+    D().print("<");
+    D().setCursor(225, 48);
+    D().print(">");
+    D().setTextSize(1);
+
+    // ── Item-Nummer der Seitenicons ───────────────────────────────────────────
+    D().setTextColor(C_DIM, C_BG);
+    D().setCursor(35, 76);
+    D().printf("%d", idxL + 1);
+    D().setCursor(195, 76);
+    D().printf("%d", idxR + 1);
+
+    // ── Label des gewählten Items ─────────────────────────────────────────────
+    D().setTextColor(TFT_WHITE, C_BG);
+    String lbl = items[selected];
+    D().setCursor(max(0, (W - (int)lbl.length() * 6) / 2), 97);
+    D().print(lbl);
+
+    // ── Seitenindikator-Punkte ────────────────────────────────────────────────
+    const int dotStep = 10;
+    int dotX0 = W / 2 - (count - 1) * dotStep / 2;
+    for (int i = 0; i < count; i++)
+        D().fillCircle(dotX0 + i * dotStep, 109, 2,
+                       i == selected ? TFT_WHITE : C_DIM);
+
+    drawFooter("A/D Nav   ENTER OK   1-5 Direkt");
     D().setTextColor(TFT_WHITE, C_BG);
 }
 

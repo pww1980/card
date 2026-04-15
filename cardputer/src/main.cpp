@@ -277,9 +277,9 @@ void loop() {
         bool enter = g_key.enter;
         bool moved = false;
 
-        if      (c == 'w' || c == 'W' || c == 'k' || c == 'K')
+        if      (c == 'a' || c == 'A' || c == 'w' || c == 'W')
             { g_menuIdx = (g_menuIdx - 1 + MENU_COUNT) % MENU_COUNT; moved = true; }
-        else if (c == 's' || c == 'S' || c == 'j' || c == 'J')
+        else if (c == 'd' || c == 'D' || c == 's' || c == 'S')
             { g_menuIdx = (g_menuIdx + 1) % MENU_COUNT; moved = true; }
         else if (c >= '1' && c <= '5')
             { g_menuIdx = c - '1'; enter = true; }
