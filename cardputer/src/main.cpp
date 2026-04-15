@@ -1,5 +1,6 @@
 #include <M5Cardputer.h>
 #include <SD.h>
+#include <SPI.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <Preferences.h>
@@ -178,6 +179,18 @@ static String pollJobStatus(const String& jobId) {
     return "parse_err";
 }
 
+// ── SD-Initialisierung ────────────────────────────────────────────────────────
+// Expliziter SPI-Bus nötig, da M5Cardputer SPI nicht automatisch auf
+// den richtigen Pins (SCK=40, MISO=39, MOSI=14, CS=12) konfiguriert.
+static bool initSD() {
+    SPI.begin(SD_SCK_PIN, SD_MISO_PIN, SD_MOSI_PIN, SD_CS_PIN);
+    delay(10);
+    if (SD.begin(SD_CS_PIN, SPI, 25000000)) return true;
+    delay(200);
+    // Fallback: halbe Taktrate
+    return SD.begin(SD_CS_PIN, SPI, 4000000);
+}
+
 // ── Setup ─────────────────────────────────────────────────────────────────────
 void setup() {
     auto cfg = M5.config();
@@ -187,7 +200,7 @@ void setup() {
     Display::init();
     Display::showMessage("Starte...");
 
-    if (!SD.begin(SD_CS_PIN)) {
+    if (!initSD()) {
         Display::showError("SD-Karte fehlt!");
         while (true) delay(1000);
     }
@@ -541,11 +554,13 @@ void loop() {
         static bool sdChecked = false;
         if (!sdChecked && millis() - g_stateEnteredMs > 150) {
             sdChecked = true;
-            if (!SD.begin(SD_CS_PIN)) {
+            // SD ist bereits in setup() gemountet – nur Infos abfragen
+            sdcard_type_t ct = SD.cardType();
+            if (ct == CARD_NONE || ct == CARD_UNKNOWN) {
                 Display::showSdResult(false, "", 0, 0, 0);
             } else {
                 String cardType;
-                switch (SD.cardType()) {
+                switch (ct) {
                     case CARD_MMC:  cardType = "MMC";  break;
                     case CARD_SD:   cardType = "SD";   break;
                     case CARD_SDHC: cardType = "SDHC"; break;
