@@ -63,7 +63,7 @@ static int g_fileListOffset = 0;
 // Job-Polling
 static unsigned long g_lastPollMs    = 0;
 static String        g_pollStatus    = "queued";
-static const int     POLL_INTERVAL_MS = 3000;
+static const int     POLL_INTERVAL_MS = 60000;
 
 // Batterie (gecacht, alle 10s aktualisiert)
 static int  g_battPct    = -1;
