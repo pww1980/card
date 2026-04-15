@@ -510,17 +510,19 @@ void loop() {
 
         bool ok = wm.startConfigPortal("DiktatSetup");
 
-        if (ok) {
-            // WiFi-Zugangsdaten in eigener NVS-Partition sichern
-            savePref("ssid", WiFi.SSID());
-            savePref("pass", WiFi.psk());
-
-            // Server-Konfiguration übernehmen
+        // Server-Parameter immer übernehmen – auch wenn WLAN-Connect fehlschlug
+        {
             String host = String(hostParam.getValue());
             int    port = String(portParam.getValue()).toInt();
             if (host.length() > 0) { g_serverHost = host; savePref("host", host); }
             if (port > 0)          { g_serverPort = port; savePref("port", String(port)); }
             Uploader::setServer(g_serverHost, g_serverPort);
+        }
+
+        if (ok) {
+            // WiFi-Zugangsdaten in eigener NVS-Partition sichern
+            savePref("ssid", WiFi.SSID());
+            savePref("pass", WiFi.psk());
             syncTime();
         }
 
