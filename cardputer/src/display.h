@@ -8,6 +8,13 @@ struct RecFileEntry {
     uint32_t sizeKB;
 };
 
+// WLAN-Netzwerk für den Scan-Browser
+struct WifiNetwork {
+    String ssid;
+    int    rssi;
+    bool   encrypted;
+};
+
 namespace Display {
     void init();
 
@@ -38,8 +45,18 @@ namespace Display {
     void showFileList(const std::vector<RecFileEntry>& files,
                       int selected, int offset);
 
-    // ── WLAN-Setup ────────────────────────────────────────────────────────────
-    void showWifiSetup(const String& ssid, const String& pass, int field);
+    // ── WLAN-Scan ─────────────────────────────────────────────────────────────
+    // scanning=true zeigt "Suche..." Animation, false zeigt Netzwerkliste
+    void showWifiScan(const std::vector<WifiNetwork>& nets,
+                      int selected, int offset, bool scanning);
+
+    // ── WLAN-Passwort ─────────────────────────────────────────────────────────
+    // Passwort wird im Klartext angezeigt
+    void showWifiPass(const String& ssid, const String& pass);
+
+    // ── Captive Portal ────────────────────────────────────────────────────────
+    // Zeigt AP-Name und IP, solange der Portal-Webserver läuft
+    void showCaptivePortal(const String& apName, const String& ip);
 
     // ── Server-Check ──────────────────────────────────────────────────────────
     void showServerCheck(const String& host, int port);

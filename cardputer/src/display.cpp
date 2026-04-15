@@ -378,16 +378,110 @@ void Display::showFileList(const std::vector<RecFileEntry>& files,
     D().setTextColor(TFT_WHITE, C_BG);
 }
 
-void Display::showWifiSetup(const String& ssid, const String& pass, int field) {
+void Display::showWifiScan(const std::vector<WifiNetwork>& nets,
+                            int selected, int offset, bool scanning) {
     clear();
-    drawHeader("WLAN einrichten", C_HDR_IDLE);
+    drawHeader("WLAN auswaehlen", C_HDR_IDLE);
+
+    if (scanning) {
+        D().setTextColor(TFT_CYAN, C_BG);
+        D().setTextSize(1);
+        D().setCursor(20, 52);
+        D().print("Suche Netzwerke...");
+        drawFooter("Bitte warten");
+        D().setTextColor(TFT_WHITE, C_BG);
+        return;
+    }
+
+    if (nets.empty()) {
+        D().setTextColor(C_DIM, C_BG);
+        D().setTextSize(1);
+        D().setCursor(20, 52);
+        D().print("Keine Netzwerke gefunden.");
+        drawFooter("R=Erneut   DEL=Zurueck");
+        D().setTextColor(TFT_WHITE, C_BG);
+        return;
+    }
+
+    const int ITEM_H  = 22;
+    const int START_Y = 23;
+    const int VISIBLE = (H - START_Y - 16) / ITEM_H;
+
+    for (int i = 0; i < VISIBLE; i++) {
+        int idx = offset + i;
+        if (idx >= (int)nets.size()) break;
+
+        int  y   = START_Y + i * ITEM_H;
+        bool sel = (idx == selected);
+
+        D().fillRect(0, y, W, ITEM_H, sel ? C_SEL_BG : C_BG);
+        if (sel) D().fillRect(0, y, 4, ITEM_H, TFT_CYAN);
+
+        // SSID-Text (max. 24 Zeichen)
+        String name = nets[idx].ssid.length() > 0 ? nets[idx].ssid : "(versteckt)";
+        if (name.length() > 24) name = name.substring(0, 22) + "..";
+        D().setTextColor(sel ? TFT_WHITE : C_DIM, sel ? C_SEL_BG : C_BG);
+        D().setTextSize(1);
+        D().setCursor(10, y + 4);
+        D().print(name);
+
+        // Schloss-Symbol wenn verschlüsselt
+        if (nets[idx].encrypted) {
+            D().setTextColor(sel ? TFT_YELLOW : 0xC5E0, sel ? C_SEL_BG : C_BG);
+            D().setCursor(W - 34, y + 4);
+            D().print("[+]");
+        }
+
+        // Signalbalken (4 Stufen, aufsteigend) rechts unten im Item
+        int rssi  = nets[idx].rssi;
+        int bars  = (rssi >= -60) ? 4 : (rssi >= -70) ? 3 : (rssi >= -80) ? 2 : 1;
+        int bx    = W - 18;
+        int baseY = y + ITEM_H - 3;
+        for (int b = 0; b < 4; b++) {
+            int bh  = 2 + b * 2;                     // Höhen: 2,4,6,8px
+            uint32_t col = (b < bars)
+                ? (sel ? TFT_WHITE : TFT_GREEN)
+                : (sel ? 0x2945 : C_DIM);
+            D().fillRect(bx + b * 4, baseY - bh, 3, bh, col);
+        }
+    }
+
+    // Scroll-Indikatoren
+    if ((int)nets.size() > VISIBLE) {
+        D().setTextColor(C_DIM, C_BG);
+        D().setCursor(W - 10, START_Y);
+        D().print(offset > 0 ? "^" : " ");
+        D().setCursor(W - 10, H - 20);
+        D().print(offset + VISIBLE < (int)nets.size() ? "v" : " ");
+    }
+
+    drawFooter("W/S:Nav  ENTER:Ausw.  R:Scan  DEL:Zur.");
+    D().setTextColor(TFT_WHITE, C_BG);
+}
+
+void Display::showWifiPass(const String& ssid, const String& pass) {
+    clear();
+    drawHeader("Passwort eingeben", C_HDR_IDLE);
+
     D().setTextSize(1);
     D().setTextColor(C_DIM, C_BG);
-    D().setCursor(6, 27);
-    D().print("DEL=loeschen  TAB=Feld  ENTER=Weiter");
-    drawInputField(40, "SSID: ", ssid, field == 0);
-    drawInputField(70, "Pass: ", String(pass.length(), '*'), field == 1);
-    drawFooter("ENTER auf Pass = Verbinden");
+    D().setCursor(6, 28);
+    D().print("Netzwerk:");
+    D().setTextColor(TFT_CYAN, C_BG);
+    D().setCursor(64, 28);
+    String s = ssid;
+    if (s.length() > 22) s = s.substring(0, 20) + "..";
+    D().print(s);
+
+    // Passwort im Klartext
+    drawInputField(50, "Pass: ", pass, true);
+
+    // Dynamischer Footer: leer → zurück möglich
+    if (pass.length() == 0)
+        drawFooter("DEL=Zurueck  ENTER=Verbinden");
+    else
+        drawFooter("DEL=loeschen  ENTER=Verbinden");
+
     D().setTextColor(TFT_WHITE, C_BG);
 }
 
@@ -452,6 +546,42 @@ void Display::showSdResult(bool ok, const String& cardType,
     }
 
     drawFooter("ENTER = Zurueck");
+    D().setTextColor(TFT_WHITE, C_BG);
+}
+
+void Display::showCaptivePortal(const String& apName, const String& ip) {
+    clear();
+    drawHeader("WLAN Setup", C_HDR_IDLE);
+
+    D().setTextSize(1);
+
+    D().setTextColor(C_DIM, C_BG);
+    D().setCursor(6, 28);
+    D().print("AP-Name:");
+    D().setTextColor(TFT_CYAN, C_BG);
+    D().setCursor(58, 28);
+    D().print(apName);
+
+    D().setTextColor(C_DIM, C_BG);
+    D().setCursor(6, 44);
+    D().print("IP:");
+    D().setTextColor(TFT_WHITE, C_BG);
+    D().setCursor(28, 44);
+    D().print(ip);
+
+    D().setTextColor(TFT_YELLOW, C_BG);
+    D().setCursor(6, 62);
+    D().print("1. Mit AP verbinden");
+    D().setCursor(6, 76);
+    D().print("2. Browser: http://");
+    D().setTextColor(TFT_WHITE, C_BG);
+    D().setCursor(6, 90);
+    D().print(ip);
+
+    D().setTextColor(C_DIM, C_BG);
+    D().setCursor(6, 106);
+    D().print("Warte auf Konfiguration...");
+
     D().setTextColor(TFT_WHITE, C_BG);
 }
 

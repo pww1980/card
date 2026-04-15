@@ -2,6 +2,7 @@
 #include <SD.h>
 #include <SPI.h>
 #include <WiFi.h>
+#include <WiFiManager.h>
 #include <HTTPClient.h>
 #include <Preferences.h>
 #include <ArduinoJson.h>
@@ -33,7 +34,7 @@ enum class AppState {
     UPLOAD_FAIL,
     JOB_POLL,
     FILE_LIST,
-    WIFI_SETUP,
+    CAPTIVE_PORTAL,  // WLAN + Server über Webseite einrichten
     SERVER_CHECK,
     SD_CHECK
 };
@@ -45,10 +46,14 @@ static String    g_lastFile  = "";
 static String    g_lastJobId = "";
 static unsigned long g_stateEnteredMs = 0;
 
-// WLAN-Setup
-static String g_setupSsid  = "";
-static String g_setupPass  = "";
-static int    g_setupField = 0;
+// WLAN + Server (laufzeit-konfigurierbar, aus NVS geladen)
+static String g_setupSsid   = "";
+static String g_setupPass   = "";
+static String g_serverHost  = SERVER_HOST;
+static int    g_serverPort  = SERVER_PORT;
+
+// Captive Portal (WiFiManager – blockierend, daher kein State nötig)
+static bool g_portalActive = false;
 
 // File-Browser
 static std::vector<RecFileEntry> g_fileList;
@@ -158,9 +163,9 @@ static String fullPath(const RecFileEntry& e) {
 static String pollJobStatus(const String& jobId) {
     if (WiFi.status() != WL_CONNECTED) return "offline";
     WiFiClient client;
-    if (!client.connect(SERVER_HOST, SERVER_PORT)) return "no_conn";
+    if (!client.connect(g_serverHost.c_str(), g_serverPort)) return "no_conn";
     client.printf("GET /status/%s HTTP/1.1\r\nHost: %s:%d\r\nConnection: close\r\n\r\n",
-                  jobId.c_str(), SERVER_HOST, SERVER_PORT);
+                  jobId.c_str(), g_serverHost.c_str(), g_serverPort);
     unsigned long dl = millis() + 5000;
     while (client.available() == 0 && millis() < dl) delay(10);
     String status_line = client.readStringUntil('\n');
@@ -211,6 +216,15 @@ void setup() {
     g_charging = M5Cardputer.Power.isCharging();
     g_lastBattMs = millis();
 
+    // Server-Konfiguration aus NVS laden
+    g_serverHost = loadPref("host", SERVER_HOST);
+    {
+        String portStr = loadPref("port", String(SERVER_PORT).c_str());
+        int p = portStr.toInt();
+        g_serverPort = (p > 0) ? p : SERVER_PORT;
+    }
+    Uploader::setServer(g_serverHost, g_serverPort);
+
     // WLAN
     String ssid = loadPref("ssid", WIFI_SSID);
     String pass = loadPref("pass", WIFI_PASS);
@@ -233,6 +247,7 @@ struct KeyEvent {
     bool enter = false;
     bool del   = false;
     bool tab   = false;
+    bool fn    = false;
 };
 static KeyEvent g_key;
 
@@ -240,10 +255,11 @@ static void captureKeys() {
     g_key = {};
     if (!M5Cardputer.Keyboard.isChange() || !M5Cardputer.Keyboard.isPressed())
         return;
-    auto st    = M5Cardputer.Keyboard.keysState();
+    auto st     = M5Cardputer.Keyboard.keysState();
     g_key.enter = st.enter;
     g_key.del   = st.del;
     g_key.tab   = st.tab;
+    g_key.fn    = st.fn;
     if (!st.word.empty()) g_key.ch = st.word[0];
 }
 
@@ -297,15 +313,11 @@ void loop() {
                 break;
 
             case 2:  // ── WLAN einrichten ───────────────────────────────────
-                g_setupSsid  = loadPref("ssid", WIFI_SSID);
-                g_setupPass  = loadPref("pass", WIFI_PASS);
-                g_setupField = 0;
-                Display::showWifiSetup(g_setupSsid, g_setupPass, g_setupField);
-                enterState(AppState::WIFI_SETUP);
+                enterState(AppState::CAPTIVE_PORTAL);
                 break;
 
             case 3:  // ── Server prüfen ─────────────────────────────────────
-                Display::showServerCheck(SERVER_HOST, SERVER_PORT);
+                Display::showServerCheck(g_serverHost, g_serverPort);
                 enterState(AppState::SERVER_CHECK);
                 break;
 
@@ -479,40 +491,41 @@ void loop() {
         break;
     }
 
-    // ── WIFI_SETUP ───────────────────────────────────────────────────────────
-    case AppState::WIFI_SETUP: {
-        char c     = g_key.ch;
-        bool enter = g_key.enter;
-        bool del   = g_key.del;
-        bool tab   = g_key.tab;
-        bool redraw = false;
+    // ── CAPTIVE_PORTAL ───────────────────────────────────────────────────────
+    // WiFiManager läuft blockierend – Display anzeigen, dann Portal starten.
+    case AppState::CAPTIVE_PORTAL: {
+        Display::showCaptivePortal("DiktatSetup", "192.168.4.1");
 
-        if (tab)  { g_setupField = 1 - g_setupField; redraw = true; }
-        if (del) {
-            if (g_setupField == 0 && g_setupSsid.length() > 0)
-                { g_setupSsid.remove(g_setupSsid.length() - 1); redraw = true; }
-            else if (g_setupField == 1 && g_setupPass.length() > 0)
-                { g_setupPass.remove(g_setupPass.length() - 1); redraw = true; }
+        WiFiManager wm;
+        wm.setConnectTimeout(15);          // 15s Verbindungsversuch nach Submit
+        wm.setConfigPortalTimeout(300);    // 5 min Portal-Timeout
+
+        // Eigene Parameter: Server-IP und -Port
+        WiFiManagerParameter hostParam("host", "Server-IP",
+                                       g_serverHost.c_str(), 40);
+        WiFiManagerParameter portParam("port", "Server-Port",
+                                       String(g_serverPort).c_str(), 8);
+        wm.addParameter(&hostParam);
+        wm.addParameter(&portParam);
+
+        bool ok = wm.startConfigPortal("DiktatSetup");
+
+        if (ok) {
+            // WiFi-Zugangsdaten in eigener NVS-Partition sichern
+            savePref("ssid", WiFi.SSID());
+            savePref("pass", WiFi.psk());
+
+            // Server-Konfiguration übernehmen
+            String host = String(hostParam.getValue());
+            int    port = String(portParam.getValue()).toInt();
+            if (host.length() > 0) { g_serverHost = host; savePref("host", host); }
+            if (port > 0)          { g_serverPort = port; savePref("port", String(port)); }
+            Uploader::setServer(g_serverHost, g_serverPort);
+            syncTime();
         }
-        if (c >= 0x20 && c <= 0x7E) {
-            if (g_setupField == 0 && g_setupSsid.length() < 32)
-                { g_setupSsid += c; redraw = true; }
-            else if (g_setupField == 1 && g_setupPass.length() < 64)
-                { g_setupPass += c; redraw = true; }
-        }
-        if (enter) {
-            if (g_setupField == 0) { g_setupField = 1; redraw = true; }
-            else {
-                savePref("ssid", g_setupSsid);
-                savePref("pass", g_setupPass);
-                connectWifi(g_setupSsid, g_setupPass);
-                Display::showMenu(MENU_ITEMS, MENU_COUNT, g_menuIdx, g_battPct, g_charging);
-                enterState(AppState::MENU);
-                break;
-            }
-        }
-        if (redraw)
-            Display::showWifiSetup(g_setupSsid, g_setupPass, g_setupField);
+
+        Display::showMenu(MENU_ITEMS, MENU_COUNT, g_menuIdx, g_battPct, g_charging);
+        enterState(AppState::MENU);
         break;
     }
 
@@ -525,8 +538,8 @@ void loop() {
                 Display::showServerResult(false, "Kein WLAN");
             } else {
                 HTTPClient http;
-                String url = "http://" + String(SERVER_HOST) + ":" +
-                             String(SERVER_PORT) + "/health";
+                String url = "http://" + g_serverHost + ":" +
+                             String(g_serverPort) + "/health";
                 http.begin(url);
                 http.setTimeout(5000);
                 int code = http.GET();

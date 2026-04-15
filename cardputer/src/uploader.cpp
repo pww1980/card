@@ -6,6 +6,16 @@
 #include <ArduinoJson.h>
 #include <vector>
 
+// Laufzeit-Serverkonfiguration (Fallback: config.h-Defines)
+static String s_host = SERVER_HOST;
+static int    s_port = SERVER_PORT;
+
+void Uploader::setServer(const String& host, int port) {
+    s_host = host;
+    s_port = port;
+    Serial.printf("[Uploader] Server: %s:%d\n", s_host.c_str(), s_port);
+}
+
 // ── Multipart-Upload via raw WiFiClient ───────────────────────────────────────
 // HTTPClient unterstützt kein Streaming großer Dateien – daher direktes TCP.
 bool Uploader::upload(const String& filePath, String& jobId) {
@@ -29,7 +39,7 @@ bool Uploader::upload(const String& filePath, String& jobId) {
     // ── Verbinden ─────────────────────────────────────────────────────────────
     WiFiClient client;
     client.setTimeout(UPLOAD_TIMEOUT_MS / 1000);
-    if (!client.connect(SERVER_HOST, SERVER_PORT)) {
+    if (!client.connect(s_host.c_str(), s_port)) {
         Serial.println("[Upload] Verbindung fehlgeschlagen");
         f.close();
         return false;
@@ -37,7 +47,7 @@ bool Uploader::upload(const String& filePath, String& jobId) {
 
     // ── HTTP-Request senden ───────────────────────────────────────────────────
     client.printf("POST %s HTTP/1.1\r\n",   UPLOAD_PATH);
-    client.printf("Host: %s:%d\r\n",        SERVER_HOST, SERVER_PORT);
+    client.printf("Host: %s:%d\r\n",        s_host.c_str(), s_port);
     client.printf("Content-Type: multipart/form-data; boundary=%s\r\n",
                   boundary.c_str());
     client.printf("Content-Length: %u\r\n", bodyLen);
