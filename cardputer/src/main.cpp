@@ -513,6 +513,7 @@ void loop() {
         // Server-Parameter immer übernehmen – auch wenn WLAN-Connect fehlschlug
         {
             String host = String(hostParam.getValue());
+            host.trim();  // Leerzeichen aus Portal-Formular entfernen
             int    port = String(portParam.getValue()).toInt();
             if (host.length() > 0) { g_serverHost = host; savePref("host", host); }
             if (port > 0)          { g_serverPort = port; savePref("port", String(port)); }
@@ -533,14 +534,18 @@ void loop() {
 
     // ── SERVER_CHECK ─────────────────────────────────────────────────────────
     case AppState::SERVER_CHECK: {
-        static bool checked = false;
-        if (!checked && millis() - g_stateEnteredMs > 150) {
-            checked = true;
+        // lastCheckedMs vergleichen mit g_stateEnteredMs statt static bool –
+        // so läuft der Check bei jedem neuen State-Eintritt genau einmal.
+        static unsigned long lastCheckedMs = 0;
+        if (lastCheckedMs != g_stateEnteredMs && millis() - g_stateEnteredMs > 150) {
+            lastCheckedMs = g_stateEnteredMs;
             if (WiFi.status() != WL_CONNECTED) {
                 Display::showServerResult(false, "Kein WLAN");
             } else {
                 HTTPClient http;
-                String url = "http://" + g_serverHost + ":" +
+                String host = g_serverHost;
+                host.trim();
+                String url = "http://" + host + ":" +
                              String(g_serverPort) + "/health";
                 http.begin(url);
                 http.setTimeout(5000);
@@ -551,12 +556,12 @@ void loop() {
                 else if (code > 0)
                     Display::showServerResult(false, "HTTP " + String(code));
                 else
-                    Display::showServerResult(false, "Keine Verbindung");
+                    Display::showServerResult(false,
+                        "Err " + String(code) + "  " + host);
                 http.end();
             }
         }
         if (g_key.enter) {
-            checked = false;
             Display::showMenu(MENU_ITEMS, MENU_COUNT, g_menuIdx, g_battPct, g_charging);
             enterState(AppState::MENU);
         }
@@ -565,9 +570,9 @@ void loop() {
 
     // ── SD_CHECK ─────────────────────────────────────────────────────────────
     case AppState::SD_CHECK: {
-        static bool sdChecked = false;
-        if (!sdChecked && millis() - g_stateEnteredMs > 150) {
-            sdChecked = true;
+        static unsigned long sdCheckedMs = 0;
+        if (sdCheckedMs != g_stateEnteredMs && millis() - g_stateEnteredMs > 150) {
+            sdCheckedMs = g_stateEnteredMs;
             // SD ist bereits in setup() gemountet – nur Infos abfragen
             sdcard_type_t ct = SD.cardType();
             if (ct == CARD_NONE || ct == CARD_UNKNOWN) {
@@ -593,7 +598,6 @@ void loop() {
             }
         }
         if (g_key.enter) {
-            sdChecked = false;
             Display::showMenu(MENU_ITEMS, MENU_COUNT, g_menuIdx, g_battPct, g_charging);
             enterState(AppState::MENU);
         }
