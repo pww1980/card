@@ -48,4 +48,4 @@
 
 // ── Timeouts ─────────────────────────────────────────────────────────────────
 #define WIFI_TIMEOUT_MS    10000
-#define UPLOAD_TIMEOUT_MS  30000
+#define UPLOAD_TIMEOUT_MS  300000   // 5 min – reicht für ~220 MB bei ~6 Mbit/s WLAN
