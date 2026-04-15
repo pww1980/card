@@ -226,40 +226,39 @@ void setup() {
 }
 
 // ── Tastatur-Helfer ───────────────────────────────────────────────────────────
-static char getKey() {
+// isChange() löscht intern das Flag beim ersten Aufruf → einmalig pro Loop
+// alles aus keysState() lesen und im Struct cachen.
+struct KeyEvent {
+    char ch    = 0;
+    bool enter = false;
+    bool del   = false;
+    bool tab   = false;
+};
+static KeyEvent g_key;
+
+static void captureKeys() {
+    g_key = {};
     if (!M5Cardputer.Keyboard.isChange() || !M5Cardputer.Keyboard.isPressed())
-        return 0;
-    auto st = M5Cardputer.Keyboard.keysState();
-    if (!st.word.empty()) return st.word[0];
-    return 0;
-}
-static bool isEnter() {
-    if (!M5Cardputer.Keyboard.isChange() || !M5Cardputer.Keyboard.isPressed())
-        return false;
-    return M5Cardputer.Keyboard.keysState().enter;
-}
-static bool isDel() {
-    if (!M5Cardputer.Keyboard.isChange() || !M5Cardputer.Keyboard.isPressed())
-        return false;
-    return M5Cardputer.Keyboard.keysState().del;
-}
-static bool isTab() {
-    if (!M5Cardputer.Keyboard.isChange() || !M5Cardputer.Keyboard.isPressed())
-        return false;
-    return M5Cardputer.Keyboard.keysState().tab;
+        return;
+    auto st    = M5Cardputer.Keyboard.keysState();
+    g_key.enter = st.enter;
+    g_key.del   = st.del;
+    g_key.tab   = st.tab;
+    if (!st.word.empty()) g_key.ch = st.word[0];
 }
 
 // ── Loop ──────────────────────────────────────────────────────────────────────
 void loop() {
     M5Cardputer.update();
+    captureKeys();   // einmalig – isChange() darf nur einmal aufgerufen werden
 
     switch (g_state) {
 
     // ── MENU ─────────────────────────────────────────────────────────────────
     case AppState::MENU: {
         updateBattery();
-        char c     = getKey();
-        bool enter = isEnter();
+        char c     = g_key.ch;
+        bool enter = g_key.enter;
         bool moved = false;
 
         if      (c == 'w' || c == 'W' || c == 'k' || c == 'K')
@@ -329,7 +328,7 @@ void loop() {
             Display::updateRecording(sec, Recorder::getGain(), Recorder::getLevel());
         }
 
-        char c = getKey();
+        char c = g_key.ch;
 
         // +/- Gain live anpassen
         if (c == '+' || c == '=') {
@@ -340,7 +339,7 @@ void loop() {
             Display::updateRecording(sec, Recorder::getGain(), Recorder::getLevel());
         }
 
-        if (isEnter()) {
+        if (g_key.enter) {
             Recorder::stop();
             Display::showConfirmUpload(g_lastFile);
             enterState(AppState::CONFIRM_UPLOAD);
@@ -350,7 +349,7 @@ void loop() {
 
     // ── CONFIRM UPLOAD ───────────────────────────────────────────────────────
     case AppState::CONFIRM_UPLOAD: {
-        char c = getKey();
+        char c = g_key.ch;
         if (c == 'j' || c == 'J' || c == 'y' || c == 'Y') {
             Display::showUploading();
             enterState(AppState::UPLOADING);
@@ -419,7 +418,7 @@ void loop() {
         }
 
         // ENTER → sofort zurück zum Menü (Job läuft auf Server weiter)
-        if (isEnter()) {
+        if (g_key.enter) {
             Display::showMenu(MENU_ITEMS, MENU_COUNT, g_menuIdx, g_battPct, g_charging);
             enterState(AppState::MENU);
         }
@@ -430,7 +429,7 @@ void loop() {
     case AppState::UPLOAD_OK:
     case AppState::UPLOAD_FAIL: {
         bool timeout = (millis() - g_stateEnteredMs > 4000);
-        if (isEnter() || timeout) {
+        if (g_key.enter || timeout) {
             Display::showMenu(MENU_ITEMS, MENU_COUNT, g_menuIdx, g_battPct, g_charging);
             enterState(AppState::MENU);
         }
@@ -439,8 +438,8 @@ void loop() {
 
     // ── FILE_LIST ────────────────────────────────────────────────────────────
     case AppState::FILE_LIST: {
-        char c     = getKey();
-        bool enter = isEnter();
+        char c     = g_key.ch;
+        bool enter = g_key.enter;
         bool back  = false;
         bool moved = false;
 
@@ -482,10 +481,10 @@ void loop() {
 
     // ── WIFI_SETUP ───────────────────────────────────────────────────────────
     case AppState::WIFI_SETUP: {
-        char c     = getKey();
-        bool enter = isEnter();
-        bool del   = isDel();
-        bool tab   = isTab();
+        char c     = g_key.ch;
+        bool enter = g_key.enter;
+        bool del   = g_key.del;
+        bool tab   = g_key.tab;
         bool redraw = false;
 
         if (tab)  { g_setupField = 1 - g_setupField; redraw = true; }
@@ -541,7 +540,7 @@ void loop() {
                 http.end();
             }
         }
-        if (isEnter()) {
+        if (g_key.enter) {
             checked = false;
             Display::showMenu(MENU_ITEMS, MENU_COUNT, g_menuIdx, g_battPct, g_charging);
             enterState(AppState::MENU);
@@ -578,7 +577,7 @@ void loop() {
                 Display::showSdResult(true, cardType, totalMB, usedMB, recFiles);
             }
         }
-        if (isEnter()) {
+        if (g_key.enter) {
             sdChecked = false;
             Display::showMenu(MENU_ITEMS, MENU_COUNT, g_menuIdx, g_battPct, g_charging);
             enterState(AppState::MENU);
