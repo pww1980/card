@@ -35,10 +35,8 @@ source .env 2>/dev/null || true
 MODEL=${WHISPER_MODEL:-medium}
 python3 - <<EOF
 from faster_whisper import WhisperModel
-print(f"  Lade Modell '{os.environ.get(\"WHISPER_MODEL\", \"medium\")}'...")
-import os
-WhisperModel(os.environ.get("WHISPER_MODEL", "medium"),
-             device="cpu", compute_type="int8")
+print("  Lade Modell '$MODEL'...")
+WhisperModel("$MODEL", device="cpu", compute_type="int8")
 print("  Whisper-Modell bereit.")
 EOF
 
