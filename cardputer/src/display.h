@@ -33,6 +33,8 @@ namespace Display {
 
     // ── Upload-Status ─────────────────────────────────────────────────────────
     void showUploading();
+    // Live-Fortschrittsbalken (kein full redraw, nur Bar + Text)
+    void showUploadProgress(uint32_t sentKB, uint32_t totalKB);
     void showUploadOk(const String& jobId);
     void showUploadFail(const String& reason);
 

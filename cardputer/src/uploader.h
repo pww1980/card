@@ -1,17 +1,16 @@
 #pragma once
 #include <Arduino.h>
 
+// Upload-Fortschritts-Callback: sentBytes, totalBytes
+typedef void (*ProgressCb)(uint32_t, uint32_t);
+
 namespace Uploader {
-    // Laufzeit-Serverkonfiguration setzen (Fallback: config.h)
     void setServer(const String& host, int port);
 
-    // Datei per HTTP multipart/form-data hochladen
-    // jobId wird bei Erfolg befüllt
+    // Fortschritts-Callback setzen (nullptr = deaktivieren)
+    void setProgressCb(ProgressCb cb);
+
     bool upload(const String& filePath, String& jobId);
-
-    // Datei zur Offline-Queue hinzufügen (SD: QUEUE_FILE)
     void addToQueue(const String& filePath);
-
-    // Gespeicherte Queue abarbeiten (aufrufen wenn WiFi verfügbar)
     void processQueue();
 }

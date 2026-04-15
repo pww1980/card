@@ -6,14 +6,18 @@
 #include <ArduinoJson.h>
 #include <vector>
 
-// Laufzeit-Serverkonfiguration (Fallback: config.h-Defines)
-static String s_host = SERVER_HOST;
-static int    s_port = SERVER_PORT;
+static String     s_host       = SERVER_HOST;
+static int        s_port       = SERVER_PORT;
+static ProgressCb s_progressCb = nullptr;
 
 void Uploader::setServer(const String& host, int port) {
     s_host = host;
     s_port = port;
     Serial.printf("[Uploader] Server: %s:%d\n", s_host.c_str(), s_port);
+}
+
+void Uploader::setProgressCb(ProgressCb cb) {
+    s_progressCb = cb;
 }
 
 // ── Multipart-Upload via raw WiFiClient ───────────────────────────────────────
@@ -56,11 +60,24 @@ bool Uploader::upload(const String& filePath, String& jobId) {
     // ── Body streamen ─────────────────────────────────────────────────────────
     client.print(partHead);
 
+    uint32_t fileSize   = bodyLen - partHead.length() - partTail.length();
+    uint32_t sent       = 0;
+    uint32_t lastReport = 0;
+    const uint32_t REPORT_INTERVAL = 4096;  // alle 4 KB melden
+
     uint8_t buf[512];
     while (f.available()) {
         int n = f.read(buf, sizeof(buf));
-        if (n > 0) client.write(buf, n);
+        if (n > 0) {
+            client.write(buf, n);
+            sent += n;
+            if (s_progressCb && sent - lastReport >= REPORT_INTERVAL) {
+                lastReport = sent;
+                s_progressCb(sent, fileSize);
+            }
+        }
     }
+    if (s_progressCb) s_progressCb(fileSize, fileSize);  // 100%
     f.close();
 
     client.print(partTail);

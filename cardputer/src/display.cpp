@@ -374,6 +374,19 @@ void Display::showUploading() {
     D().print("Bitte warten.");
 }
 
+void Display::showUploadProgress(uint32_t sentKB, uint32_t totalKB) {
+    // Nur Fortschrittsbalken + Text aktualisieren (kein clear)
+    int pct = (totalKB > 0) ? (int)((uint64_t)sentKB * 100 / totalKB) : 0;
+    if (pct > 100) pct = 100;
+    drawBar(10, 60, W - 20, 12, pct, TFT_CYAN);
+
+    D().fillRect(6, 77, W - 12, 12, C_BG);
+    D().setTextColor(TFT_CYAN, C_BG);
+    D().setTextSize(1);
+    D().setCursor(6, 80);
+    D().printf("%u / %u KB   %d%%", sentKB, totalKB, pct);
+}
+
 void Display::showUploadOk(const String& jobId) {
     clear();
     drawHeader("Hochgeladen!", C_HDR_OK);
@@ -426,10 +439,12 @@ void Display::showJobPoll(const String& jobId, const String& status,
     // Status mit Icon
     String icon;
     uint32_t col;
-    if (status == "queued")     { icon = "[ ]"; col = C_DIM;      }
-    else if (status == "processing") { icon = "[~]"; col = TFT_CYAN;  }
-    else if (status == "done")  { icon = "[OK]"; col = TFT_GREEN;  }
-    else                        { icon = "[!!]"; col = TFT_RED;    }
+    if      (status == "queued")       { icon = "[ ]"; col = C_DIM;      }
+    else if (status == "transcribing") { icon = "[T]"; col = TFT_YELLOW; }
+    else if (status == "processing")   { icon = "[~]"; col = TFT_CYAN;   }
+    else if (status == "summarizing")  { icon = "[S]"; col = 0xFD20;     } // Orange
+    else if (status == "done")         { icon = "[OK]";col = TFT_GREEN;  }
+    else                               { icon = "[!!]";col = TFT_RED;    }
 
     D().setTextSize(1);
     D().setTextColor(col, C_BG);

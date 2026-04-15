@@ -41,26 +41,34 @@ def _init_db() -> None:
                 job_id      TEXT PRIMARY KEY,
                 status      TEXT NOT NULL DEFAULT 'queued',
                 audio_file  TEXT,
+                transcript  TEXT,
                 result      TEXT,
                 error       TEXT,
                 created_at  TEXT DEFAULT (datetime('now','localtime'))
             )
         """)
+        # Migration für bestehende Datenbanken ohne transcript-Spalte
+        try:
+            conn.execute("ALTER TABLE jobs ADD COLUMN transcript TEXT")
+        except sqlite3.OperationalError:
+            pass  # Spalte existiert bereits
 
 def _db_save(job: dict) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("""
-            INSERT INTO jobs (job_id, status, audio_file, result, error)
-            VALUES (:job_id, :status, :audio_file, :result, :error)
+            INSERT INTO jobs (job_id, status, audio_file, transcript, result, error)
+            VALUES (:job_id, :status, :audio_file, :transcript, :result, :error)
             ON CONFLICT(job_id) DO UPDATE SET
                 status     = excluded.status,
                 audio_file = excluded.audio_file,
+                transcript = COALESCE(excluded.transcript, transcript),
                 result     = excluded.result,
                 error      = excluded.error
         """, {
             "job_id":     job["job_id"],
             "status":     job["status"],
             "audio_file": job.get("audio_file"),
+            "transcript": job.get("transcript"),
             "result":     job.get("result"),
             "error":      job.get("error"),
         })
@@ -184,14 +192,29 @@ async def delete_result(job_id: str):
 # ── Hintergrundverarbeitung ───────────────────────────────────────────────────
 
 async def _run_job(job_id: str, audio_path: Path):
-    _db_save({"job_id": job_id, "status": "processing",
+    _db_save({"job_id": job_id, "status": "queued",
               "audio_file": str(audio_path), "result": None, "error": None})
+
+    def _status_cb(status: str, extra: str | None = None) -> None:
+        update: dict = {
+            "job_id":     job_id,
+            "status":     status,
+            "audio_file": str(audio_path),
+            "result":     None,
+            "error":      None,
+        }
+        # extra enthält bei "summarizing" den Transkript-Pfad
+        if extra:
+            update["transcript"] = extra
+        _db_save(update)
+
     try:
         output_path = await asyncio.to_thread(
             run_pipeline,
             audio_path=audio_path,
             output_dir=OUTPUT_DIR,
             job_id=job_id,
+            status_cb=_status_cb,
         )
         _db_save({"job_id": job_id, "status": "done",
                   "audio_file": str(audio_path),

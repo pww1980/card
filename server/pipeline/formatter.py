@@ -91,6 +91,43 @@ def format_markdown(
     output_path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def save_transcript(
+    output_path: Path,
+    job_id: str,
+    audio_path: Path,
+    segments: list[dict],
+    language: str,
+    duration: float,
+) -> None:
+    """Speichert nur das Transkript (ohne Zusammenfassung) als Markdown."""
+    now      = datetime.now()
+    date_str = now.strftime("%Y-%m-%d")
+    time_str = now.strftime("%H:%M:%S")
+    lang_label = {"de": "Deutsch", "en": "Englisch"}.get(language, language)
+
+    lines = [
+        f"# Transkript – {date_str} {time_str[:5]}\n",
+        "## Metadaten\n",
+        "| Feld | Wert |", "|---|---|",
+        f"| Job-ID | `{job_id}` |",
+        f"| Datum | {date_str} |",
+        f"| Uhrzeit | {time_str} |",
+        f"| Audiodatei | `{audio_path.name}` |",
+        f"| Dauer | {_fmt_duration(duration)} |",
+        f"| Sprache | {lang_label} |",
+        "",
+        "---\n",
+        "## Transkription\n",
+    ]
+    for seg in segments:
+        ts      = _fmt_time(seg["start"])
+        speaker = seg.get("speaker") or "?"
+        text    = seg.get("text", "")
+        lines.append(f"**[{ts}]** {speaker}: {text}")
+    lines.append("")
+    output_path.write_text("\n".join(lines), encoding="utf-8")
+
+
 def _fmt_duration(seconds: float) -> str:
     m = int(seconds) // 60
     s = int(seconds) % 60

@@ -89,6 +89,9 @@ static void savePref(const char* key, const String& val) {
 // ── Hilfsfunktionen ───────────────────────────────────────────────────────────
 static void syncTime() {
     configTime(3600, 3600, "pool.ntp.org", "time.google.com");
+    // Warten bis NTP synchronisiert (max. 8 s), sonst nutzt getLocalTime() millis()
+    struct tm ti;
+    getLocalTime(&ti, 8000);
 }
 
 static String timestampFilename() {
@@ -159,25 +162,24 @@ static String fullPath(const RecFileEntry& e) {
     return String(REC_DIR) + "/" + e.name;
 }
 
-// HTTP GET /status/{job_id}
+// HTTP GET /status/{job_id} – HTTPClient statt raw WiFiClient:
+// Verhindert Socket-Erschöpfung (lwIP-Limit ~5) bei langen Poll-Serien.
 static String pollJobStatus(const String& jobId) {
     if (WiFi.status() != WL_CONNECTED) return "offline";
-    WiFiClient client;
-    if (!client.connect(g_serverHost.c_str(), g_serverPort)) return "no_conn";
-    client.printf("GET /status/%s HTTP/1.1\r\nHost: %s:%d\r\nConnection: close\r\n\r\n",
-                  jobId.c_str(), g_serverHost.c_str(), g_serverPort);
-    unsigned long dl = millis() + 5000;
-    while (client.available() == 0 && millis() < dl) delay(10);
-    String status_line = client.readStringUntil('\n');
-    int code = (status_line.length() > 12) ? status_line.substring(9,12).toInt() : 0;
-    if (code != 200) { client.stop(); return "http_" + String(code); }
-    while (client.available()) {
-        String line = client.readStringUntil('\n');
-        if (line == "\r" || line.isEmpty()) break;
+    HTTPClient http;
+    String host = g_serverHost;
+    host.trim();
+    String url = "http://" + host + ":" + String(g_serverPort) +
+                 "/status/" + jobId;
+    http.begin(url);
+    http.setTimeout(5000);
+    int code = http.GET();
+    if (code != 200) {
+        http.end();
+        return (code > 0) ? "http_" + String(code) : "no_conn";
     }
-    String body;
-    while (client.available()) body += (char)client.read();
-    client.stop();
+    String body = http.getString();
+    http.end();
     JsonDocument doc;
     if (deserializeJson(doc, body) == DeserializationError::Ok)
         return doc["status"].as<String>();
@@ -248,6 +250,11 @@ struct KeyEvent {
     bool del   = false;
     bool tab   = false;
     bool fn    = false;
+    // Cursor-Tasten (USB-HID: 0x4F–0x52)
+    bool up    = false;
+    bool down  = false;
+    bool left  = false;
+    bool right = false;
 };
 static KeyEvent g_key;
 
@@ -261,6 +268,13 @@ static void captureKeys() {
     g_key.tab   = st.tab;
     g_key.fn    = st.fn;
     if (!st.word.empty()) g_key.ch = st.word[0];
+    // Cursor-Tasten via USB-HID-Keycodes
+    for (auto k : st.hid_keys) {
+        if (k == 0x52) g_key.up    = true;  // Arrow Up
+        if (k == 0x51) g_key.down  = true;  // Arrow Down
+        if (k == 0x50) g_key.left  = true;  // Arrow Left
+        if (k == 0x4F) g_key.right = true;  // Arrow Right
+    }
 }
 
 // ── Loop ──────────────────────────────────────────────────────────────────────
@@ -277,9 +291,9 @@ void loop() {
         bool enter = g_key.enter;
         bool moved = false;
 
-        if      (c == 'a' || c == 'A' || c == 'w' || c == 'W')
+        if      (c == 'a' || c == 'A' || c == 'w' || c == 'W' || g_key.left  || g_key.up)
             { g_menuIdx = (g_menuIdx - 1 + MENU_COUNT) % MENU_COUNT; moved = true; }
-        else if (c == 'd' || c == 'D' || c == 's' || c == 'S')
+        else if (c == 'd' || c == 'D' || c == 's' || c == 'S' || g_key.right || g_key.down)
             { g_menuIdx = (g_menuIdx + 1) % MENU_COUNT; moved = true; }
         else if (c >= '1' && c <= '5')
             { g_menuIdx = c - '1'; enter = true; }
@@ -377,14 +391,25 @@ void loop() {
         if (millis() - g_stateEnteredMs < 150) break;  // Display zeichnen lassen
 
         if (WiFi.status() != WL_CONNECTED) {
+            // Einmal neu verbinden bevor wir aufgeben
+            String ssid = loadPref("ssid", WIFI_SSID);
+            String pass = loadPref("pass", WIFI_PASS);
+            if (ssid.length() > 0) connectWifi(ssid, pass);
+        }
+        if (WiFi.status() != WL_CONNECTED) {
             Uploader::addToQueue(g_lastFile);
             Display::showUploadFail("Kein WLAN – Queue +1");
             enterState(AppState::UPLOAD_FAIL);
             break;
         }
 
+        Uploader::setProgressCb([](uint32_t sent, uint32_t total) {
+            Display::showUploadProgress(sent / 1024, total / 1024);
+        });
+
         String jobId;
         bool ok = Uploader::upload(g_lastFile, jobId);
+        Uploader::setProgressCb(nullptr);
 
         if (ok) {
             g_lastJobId  = jobId;
@@ -457,14 +482,14 @@ void loop() {
 
         const int VISIBLE = 4;
 
-        if (c == 'w' || c == 'W' || c == 'k' || c == 'K') {
+        if (c == 'w' || c == 'W' || c == 'k' || c == 'K' || g_key.up) {
             if (g_fileListIdx > 0) {
                 g_fileListIdx--;
                 if (g_fileListIdx < g_fileListOffset)
                     g_fileListOffset = g_fileListIdx;
                 moved = true;
             }
-        } else if (c == 's' || c == 'S' || c == 'j' || c == 'J') {
+        } else if (c == 's' || c == 'S' || c == 'j' || c == 'J' || g_key.down) {
             if (g_fileListIdx < (int)g_fileList.size() - 1) {
                 g_fileListIdx++;
                 if (g_fileListIdx >= g_fileListOffset + VISIBLE)
