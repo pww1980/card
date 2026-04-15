@@ -37,11 +37,13 @@ static int16_t   g_buf[REC_BUFFER_SIZE];
 bool Recorder::start(const String& filePath) {
     if (g_running) return false;
 
-    auto& mic_cfg = M5Cardputer.Mic.config();
-    mic_cfg.sample_rate  = SAMPLE_RATE;
-    mic_cfg.stereo       = false;
-    mic_cfg.use_adc      = false;
+    // config() gibt einen rvalue zurück → per Copy holen, ändern, zurückschreiben
+    auto mic_cfg = M5Cardputer.Mic.config();
+    mic_cfg.sample_rate   = SAMPLE_RATE;
+    mic_cfg.stereo        = false;
+    mic_cfg.use_adc       = false;
     mic_cfg.over_sampling = 1;
+    M5Cardputer.Mic.config(mic_cfg);
 
     if (!M5Cardputer.Mic.begin()) {
         Serial.println("[Recorder] Mic.begin() fehlgeschlagen");

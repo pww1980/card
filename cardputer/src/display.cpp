@@ -17,7 +17,7 @@ static const int W = 240;
 static const int H = 135;
 
 // ── Hilfsfunktionen ───────────────────────────────────────────────────────────
-static auto& D() { return M5Cardputer.Display; }
+static decltype(M5Cardputer.Display)& D() { return M5Cardputer.Display; }
 
 static void clear() { D().fillScreen(C_BG); }
 
