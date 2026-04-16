@@ -61,8 +61,9 @@ static int g_fileListIdx    = 0;
 static int g_fileListOffset = 0;
 
 // Job-Polling
-static unsigned long g_lastPollMs    = 0;
-static String        g_pollStatus    = "queued";
+static unsigned long g_lastPollMs     = 0;
+static String        g_pollStatus     = "queued";
+static uint32_t      g_pollDisplaySec = UINT32_MAX;  // Throttle: nur bei Änderung neu zeichnen
 static const int     POLL_INTERVAL_MS = 60000;
 
 // Batterie (gecacht, alle 10s aktualisiert)
@@ -422,9 +423,10 @@ void loop() {
         Uploader::setProgressCb(nullptr);
 
         if (ok) {
-            g_lastJobId  = jobId;
-            g_pollStatus = "queued";
-            g_lastPollMs = 0;
+            g_lastJobId      = jobId;
+            g_pollStatus     = "queued";
+            g_lastPollMs     = 0;
+            g_pollDisplaySec = UINT32_MAX;  // Ersten Zeichendurchlauf erzwingen
             Display::showUploadOk(jobId);
             delay(1500);
             // Header für Polling zeichnen
@@ -446,26 +448,48 @@ void loop() {
     case AppState::JOB_POLL: {
         uint32_t elapsed = (millis() - g_stateEnteredMs) / 1000;
 
-        // Alle POLL_INTERVAL_MS abfragen
-        if (millis() - g_lastPollMs > POLL_INTERVAL_MS) {
+        // Alle POLL_INTERVAL_MS abfragen (erster Poll sofort nach State-Eintritt)
+        if (millis() - g_lastPollMs > (unsigned long)POLL_INTERVAL_MS) {
             g_lastPollMs = millis();
-            g_pollStatus = pollJobStatus(g_lastJobId);
+            String newStatus = pollJobStatus(g_lastJobId);
+            if (newStatus != g_pollStatus) {
+                g_pollStatus     = newStatus;
+                g_pollDisplaySec = UINT32_MAX;  // Sofort neu zeichnen
+            }
         }
 
-        Display::showJobPoll(g_lastJobId, g_pollStatus, elapsed);
+        // Display nur 1x/s aktualisieren – spart SPI, Spinner animiert sowieso nur 1/s.
+        // Exzessives SPI-Schreiben (100+ Hz) blockiert den Loop und frisst Key-Events.
+        if (elapsed != g_pollDisplaySec) {
+            g_pollDisplaySec = elapsed;
+            Display::showJobPoll(g_lastJobId, g_pollStatus, elapsed);
+        }
 
         // Fertig oder Fehler → Ergebnis-Screen
         if (g_pollStatus == "done") {
+            g_pollDisplaySec = UINT32_MAX;
             delay(800);
             Display::showUploadOk(g_lastJobId);
             enterState(AppState::UPLOAD_OK);
+            break;
         } else if (g_pollStatus == "failed") {
+            g_pollDisplaySec = UINT32_MAX;
             Display::showUploadFail("Pipeline-Fehler auf Server");
             enterState(AppState::UPLOAD_FAIL);
+            break;
+        }
+
+        // Auto-Timeout nach 10 Minuten → Menü (Job läuft auf Server weiter)
+        if (millis() - g_stateEnteredMs > 600000UL) {
+            g_pollDisplaySec = UINT32_MAX;
+            Display::showMenu(MENU_ITEMS, MENU_COUNT, g_menuIdx, g_battPct, g_charging);
+            enterState(AppState::MENU);
+            break;
         }
 
         // ENTER → sofort zurück zum Menü (Job läuft auf Server weiter)
         if (g_key.enter) {
+            g_pollDisplaySec = UINT32_MAX;
             Display::showMenu(MENU_ITEMS, MENU_COUNT, g_menuIdx, g_battPct, g_charging);
             enterState(AppState::MENU);
         }

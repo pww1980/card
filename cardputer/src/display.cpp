@@ -462,6 +462,7 @@ void Display::showJobPoll(const String& jobId, const String& status,
     D().setTextColor(TFT_CYAN, C_BG);
     D().print(spinner[(elapsedSec) % 4]);
 
+    drawFooter("ENTER = Zum Menue");
     D().setTextColor(TFT_WHITE, C_BG);
 }
 
