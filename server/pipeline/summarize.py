@@ -5,6 +5,7 @@ Modell: gemma3:12b oder qwen3:8b (konfigurierbar per ENV).
 
 import os
 import json
+import re
 
 import ollama
 
@@ -67,6 +68,9 @@ def summarize(segments: list[dict], language: str) -> dict:
     )
 
     raw = response.message.content.strip()
+
+    # <think>…</think> Reasoning-Blöcke entfernen (qwen3, deepseek-r1, o-Modelle)
+    raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
 
     # JSON aus Antwort extrahieren (LLM gibt manchmal Markdown-Blöcke zurück)
     if "```" in raw:
